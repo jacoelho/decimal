@@ -15,7 +15,7 @@ func uint384FromUint192(n uint192) uint384 {
 }
 
 func (n uint384) isZero() bool {
-	return n == uint384{}
+	return n.w[0]|n.w[1]|n.w[2]|n.w[3]|n.w[4]|n.w[5] == 0
 }
 
 func (n uint384) cmp(other uint384) int {
@@ -129,6 +129,13 @@ func (n uint384) scaleUp10(scale int) (uint384, bool) {
 	if scale < 0 {
 		panic("decimal: internal negative scale")
 	}
+	if scale == 0 {
+		return n, true
+	}
+	if scale <= 19 {
+		out, overflow := n.mulSmall(pow10[scale].lo)
+		return out, !overflow
+	}
 	out := n
 	for scale > 0 {
 		step := min(scale, len(pow10)-1)
@@ -147,6 +154,9 @@ func (n uint384) scaleUp10(scale int) (uint384, bool) {
 }
 
 func pow10Uint384(scale int) (uint384, bool) {
+	if scale >= 0 && scale < len(pow10) {
+		return uint384FromMantissa(pow10[scale]), true
+	}
 	return uint384{w: [6]uint64{1}}.scaleUp10(scale)
 }
 

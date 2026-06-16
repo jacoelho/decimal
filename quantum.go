@@ -177,13 +177,25 @@ func quantizeRational(op string, negative bool, numerator, denominator uint384, 
 	if !ok {
 		return Decimal{}, fmt.Errorf("decimal: %s: %w", op, ErrOverflow)
 	}
+	var overflow bool
+	if quantumMantissa == oneMantissa {
+		quotient, remainder := divModWide(scaledNumerator, denominator)
+		if mode != RoundTowardZero && shouldRoundUpWide(mode, negative, quotient, remainder, denominator) {
+			quotient, overflow = quotient.addOne()
+			if overflow {
+				return Decimal{}, fmt.Errorf("decimal: %s: %w", op, ErrOverflow)
+			}
+		}
+		return packFixedScale(negative, quantumScale, quotient, op)
+	}
+
 	scaledDenominator, overflow := denominator.mulMantissa(quantumMantissa)
 	if overflow {
 		return Decimal{}, fmt.Errorf("decimal: %s: %w", op, ErrOverflow)
 	}
 
 	quotient, remainder := divModWide(scaledNumerator, scaledDenominator)
-	if shouldRoundUpWide(mode, negative, quotient, remainder, scaledDenominator) {
+	if mode != RoundTowardZero && shouldRoundUpWide(mode, negative, quotient, remainder, scaledDenominator) {
 		quotient, overflow = quotient.addOne()
 		if overflow {
 			return Decimal{}, fmt.Errorf("decimal: %s: %w", op, ErrOverflow)
@@ -235,6 +247,19 @@ func shouldRoundUpWide(mode RoundingMode, negative bool, quotient, remainder, di
 }
 
 func compareTwice(a, b uint384) int {
+	if b.w[1]|b.w[2]|b.w[3]|b.w[4]|b.w[5] == 0 {
+		if a.w[1]|a.w[2]|a.w[3]|a.w[4]|a.w[5] != 0 || a.w[0]>>63 != 0 {
+			return 1
+		}
+		double := a.w[0] << 1
+		if double < b.w[0] {
+			return -1
+		}
+		if double > b.w[0] {
+			return 1
+		}
+		return 0
+	}
 	double, overflow := a.add(a)
 	if overflow {
 		return 1

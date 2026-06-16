@@ -97,6 +97,9 @@ func (d Decimal) Div(other Decimal) (Decimal, error) {
 		}
 		return res.Normalize(), nil
 	}
+	if bMant.hi == 0 && !smallDivisorCanTerminate(aMant, bMant.lo) {
+		return Decimal{}, fmt.Errorf("decimal: div: %w", ErrInexact)
+	}
 
 	denominator := uint384FromMantissa(bMant)
 	var ok bool
@@ -126,6 +129,18 @@ func (d Decimal) Div(other Decimal) (Decimal, error) {
 		return res.Normalize(), nil
 	}
 	return Decimal{}, fmt.Errorf("decimal: div: %w", ErrInexact)
+}
+
+func smallDivisorCanTerminate(dividend Mantissa, divisor uint64) bool {
+	divisor >>= bits.TrailingZeros64(divisor)
+	for divisor%5 == 0 {
+		divisor /= 5
+	}
+	if divisor == 1 {
+		return true
+	}
+	_, remainder := dividend.divMod64(divisor)
+	return remainder == 0
 }
 
 // Remainder returns d % other. The result has the sign of d and the common
@@ -167,6 +182,9 @@ func (d Decimal) Remainder(other Decimal) (Decimal, error) {
 }
 
 func powerOfTenDivisorExponent(m Mantissa, scale uint8) (int, bool) {
+	if m == tenMantissa {
+		return 1 - int(scale), true
+	}
 	power := 0
 	for {
 		if m == oneMantissa {
