@@ -478,6 +478,12 @@ func TestSQLValueAndScanText(t *testing.T) {
 	if !got.Equal(d) {
 		t.Fatalf("Scan string = %s, want %s", got, d)
 	}
+	if err := got.Scan(int64(-42)); err != nil {
+		t.Fatalf("Scan int64 error: %v", err)
+	}
+	if want := decimal.FromInt64(-42); !got.Equal(want) {
+		t.Fatalf("Scan int64 = %s, want %s", got, want)
+	}
 	if err := got.Scan(3.14); !errors.Is(err, decimal.ErrParse) {
 		t.Fatalf("Scan unsupported error = %v, want ErrParse", err)
 	}

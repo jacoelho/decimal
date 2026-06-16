@@ -5,8 +5,8 @@ import (
 	"fmt"
 )
 
-// Scan implements sql.Scanner. It accepts nil, string, and []byte values; nil
-// scans as the canonical zero.
+// Scan implements sql.Scanner. It accepts nil, string, []byte, and int64
+// values; nil scans as the canonical zero.
 func (d *Decimal) Scan(value any) error {
 	if value == nil {
 		*d = Decimal{}
@@ -27,6 +27,9 @@ func (d *Decimal) Scan(value any) error {
 			return err
 		}
 		*d = parsed
+		return nil
+	case int64:
+		*d = FromInt64(v)
 		return nil
 	default:
 		return fmt.Errorf("decimal: cannot scan from %T: %w", value, ErrParse)

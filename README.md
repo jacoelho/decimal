@@ -177,7 +177,7 @@ propagated, converted to an error, or treated as a panic.
 
 JSON marshals as a quoted decimal string. JSON unmarshal accepts quoted decimal
 strings and JSON numbers. SQL `Value` returns a decimal string; `Scan` accepts
-`nil`, `string`, and `[]byte`.
+`nil`, `string`, `[]byte`, and `int64`.
 
 ## Verification
 
