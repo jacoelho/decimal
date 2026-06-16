@@ -1,221 +1,158 @@
 package decimal
 
-import "math/bits"
+import (
+	"fmt"
+	"math/bits"
+)
 
-// Add returns d + other. The second result reports whether the result is
-// representable. If the exact result needs more mantissa digits than Decimal
-// can hold, Add rounds half away from zero while reducing scale.
-func (d Decimal) Add(other Decimal) (Decimal, bool) {
+// Add returns d + other exactly.
+func (d Decimal) Add(other Decimal) (Decimal, error) {
+	return d.add(other, "add")
+}
+
+func (d Decimal) add(other Decimal, op string) (Decimal, error) {
 	aNeg, aScale, aMant := d.unpack()
 	bNeg, bScale, bMant := other.unpack()
 
 	if aMant.isZero() {
-		return pack(bNeg, bScale, bMant), true
+		return pack(bNeg, bScale, bMant), nil
 	}
 	if bMant.isZero() {
-		return pack(aNeg, aScale, aMant), true
+		return pack(aNeg, aScale, aMant), nil
 	}
 
 	scale := max(aScale, bScale)
 	a, ok := scaleUp(aMant, int(scale-aScale))
 	if !ok {
-		return Decimal{}, false
+		return Decimal{}, fmt.Errorf("decimal: %s: %w", op, ErrOverflow)
 	}
 	b, ok := scaleUp(bMant, int(scale-bScale))
 	if !ok {
-		return Decimal{}, false
+		return Decimal{}, fmt.Errorf("decimal: %s: %w", op, ErrOverflow)
 	}
 
 	if aNeg == bNeg {
 		sum, ok := a.add(b)
 		if !ok {
-			return Decimal{}, false
+			return Decimal{}, fmt.Errorf("decimal: %s: %w", op, ErrOverflow)
 		}
-		return roundAndPack(aNeg, int(scale), sum)
+		return exactPack(aNeg, int(scale), uint384FromUint192(sum), op)
 	}
 
 	switch a.cmp(b) {
 	case 0:
-		return Decimal{}, true
+		return Decimal{}, nil
 	case 1:
 		diff, _ := a.sub(b)
-		return roundAndPack(aNeg, int(scale), diff)
+		return exactPack(aNeg, int(scale), uint384FromUint192(diff), op)
 	default:
 		diff, _ := b.sub(a)
-		return roundAndPack(bNeg, int(scale), diff)
+		return exactPack(bNeg, int(scale), uint384FromUint192(diff), op)
 	}
 }
 
-// Sub returns d - other. The second result reports whether the result is
-// representable. If the exact result needs more mantissa digits than Decimal
-// can hold, Sub rounds half away from zero while reducing scale.
-func (d Decimal) Sub(other Decimal) (Decimal, bool) {
-	return d.Add(other.Neg())
+// Sub returns d - other exactly.
+func (d Decimal) Sub(other Decimal) (Decimal, error) {
+	return d.add(other.Neg(), "sub")
 }
 
-// Mul returns d * other. The second result reports whether the result is
-// representable. If the exact result has more than MaxScale fractional digits
-// or needs more mantissa digits than Decimal can hold, Mul rounds half away
-// from zero while reducing scale.
-func (d Decimal) Mul(other Decimal) (Decimal, bool) {
+// Mul returns d * other exactly.
+func (d Decimal) Mul(other Decimal) (Decimal, error) {
 	aNeg, aScale, aMant := d.unpack()
 	bNeg, bScale, bMant := other.unpack()
 	if aMant.isZero() || bMant.isZero() {
-		return Decimal{}, true
+		return Decimal{}, nil
 	}
 
-	return roundAndPack(aNeg != bNeg, int(aScale)+int(bScale), fullMul96(aMant, bMant))
+	return exactPack(aNeg != bNeg, int(aScale)+int(bScale), uint384FromUint192(fullMul96(aMant, bMant)), "mul")
 }
 
-// Div returns d / other rounded half away from zero with at most MaxScale
-// fractional digits. The second result reports whether the division succeeded
-// and the result is representable.
-func (d Decimal) Div(other Decimal) (Decimal, bool) {
+// Div returns d / other exactly.
+func (d Decimal) Div(other Decimal) (Decimal, error) {
 	aNeg, aScale, aMant := d.unpack()
 	bNeg, bScale, bMant := other.unpack()
 	if bMant.isZero() {
-		return Decimal{}, false
+		return Decimal{}, fmt.Errorf("decimal: div: %w", ErrDivideByZero)
 	}
 	if aMant.isZero() {
-		return Decimal{}, true
-	}
-	if scale, ok := powerOfTenDivisorScale(bMant, bScale); ok {
-		neg := aNeg != bNeg
-		if scale >= aScale {
-			mantissa, ok := mulPow10Mantissa(aMant, scale-aScale)
-			if !ok {
-				return Decimal{}, false
-			}
-			return pack(neg, 0, mantissa), true
-		}
-		return pack(neg, aScale-scale, aMant).Normalize(), true
+		return Decimal{}, nil
 	}
 
-	minScale := 0
-	if aScale > bScale {
-		minScale = int(aScale - bScale)
-	}
 	neg := aNeg != bNeg
-	maxPower := int(bScale) + int(MaxScale) - int(aScale)
-	if maxPower <= len(pow10)-1 || bMant.hi != 0 {
-		return divByScaledDivisor(aMant, bMant, aScale, bScale, minScale, neg)
+	if bMant == oneMantissa && bScale == 0 {
+		return pack(neg, aScale, aMant).Normalize(), nil
 	}
-	return divBySmallDivisorLargeScale(aMant, bMant.lo, aScale, bScale, minScale, neg)
-}
-
-func divByScaledDivisor(aMant, bMant Mantissa, aScale, bScale uint8, minScale int, negative bool) (Decimal, bool) {
-	for scale := int(MaxScale); scale >= minScale; scale-- {
-		power := int(bScale) + scale - int(aScale)
-		if power < 0 {
-			continue
-		}
-		num, ok := scaleUp(aMant, power)
-		if !ok {
-			// A quotient that fits in Decimal implies
-			// scaledNumerator < (maxMantissa+1)*maxMantissa < 2^192.
-			continue
-		}
-		if !quotientFitsMantissa(num, bMant) {
-			continue
-		}
-		var q uint192
-		var exact bool
-		if bMant.hi == 0 {
-			var rem uint64
-			q, rem = num.divModSmall(bMant.lo)
-			if roundSmallDivisorQuotient(rem, bMant.lo) {
-				var ok bool
-				q, ok = q.add(uint192{lo: oneMantissa.lo})
-				if !ok {
-					continue
-				}
-			}
-			exact = rem == 0
-		} else {
-			var rem Mantissa
-			q, rem = divMod192By96(num, bMant)
-			if roundDivQuotient(rem, bMant) {
-				var ok bool
-				q, ok = q.add(uint192{lo: oneMantissa.lo})
-				if !ok {
-					continue
-				}
-			}
-			exact = rem.isZero()
-		}
-		mantissa, fits := q.mantissa()
-		if !fits {
-			continue
-		}
-		res := pack(negative, uint8FromScale(scale), mantissa)
-		if exact {
-			res = res.Normalize()
-		}
-		return res, true
-	}
-	return Decimal{}, false
-}
-
-func divBySmallDivisorLargeScale(aMant Mantissa, divisor uint64, aScale, bScale uint8, minScale int, negative bool) (Decimal, bool) {
-	var num uint192
-	numPower := 0
-	haveNum := false
-	for scale := int(MaxScale); scale >= minScale; scale-- {
-		power := int(bScale) + scale - int(aScale)
-		if power < 0 {
-			continue
-		}
-		if haveNum && power == numPower-1 && power >= len(pow10) {
-			num, _ = num.divModSmall(10)
-			numPower = power
-		} else {
-			var ok bool
-			num, ok = scaleUp(aMant, power)
+	if exponent, ok := powerOfTenDivisorExponent(bMant, bScale); ok {
+		targetScale := int(aScale) + exponent
+		if targetScale < 0 {
+			mantissa, ok := mulPow10Mantissa(aMant, uint8FromScale(-targetScale))
 			if !ok {
-				// A quotient that fits in Decimal implies
-				// scaledNumerator < (maxMantissa+1)*maxMantissa < 2^192.
-				haveNum = false
-				continue
+				return Decimal{}, fmt.Errorf("decimal: div: %w", ErrOverflow)
 			}
-			haveNum = true
-			numPower = power
+			return pack(neg, 0, mantissa), nil
 		}
-		if !quotientFitsSmallMantissa(num, divisor) {
+		res, err := exactPack(neg, targetScale, uint384FromMantissa(aMant), "div")
+		if err != nil {
+			return Decimal{}, err
+		}
+		return res.Normalize(), nil
+	}
+
+	denominator := uint384FromMantissa(bMant)
+	var ok bool
+	denominator, ok = denominator.scaleUp10(int(aScale))
+	if !ok {
+		return Decimal{}, fmt.Errorf("decimal: div: %w", ErrOverflow)
+	}
+	for scale := 0; scale <= int(MaxScale); scale++ {
+		numerator := uint384FromMantissa(aMant)
+		numerator, ok = numerator.scaleUp10(int(bScale) + scale)
+		if !ok {
+			break
+		}
+		quotient, remainder := divModWide(numerator, denominator)
+		if !remainder.isZero() {
+			if scale == 0 {
+				if quotient.cmp(uint384FromMantissa(maxMantissa)) >= 0 {
+					return Decimal{}, fmt.Errorf("decimal: div: %w", ErrOverflow)
+				}
+			}
 			continue
 		}
-		if res, ok := divScaledSmall(num, divisor, negative, scale); ok {
-			return res, true
+		res, err := exactPack(neg, scale, quotient, "div")
+		if err != nil {
+			return Decimal{}, err
 		}
+		return res.Normalize(), nil
 	}
-	return Decimal{}, false
+	return Decimal{}, fmt.Errorf("decimal: div: %w", ErrInexact)
 }
 
 // Remainder returns d % other. The result has the sign of d and the common
-// operand scale, matching .NET decimal remainder behavior.
-func (d Decimal) Remainder(other Decimal) (Decimal, bool) {
+// operand scale.
+func (d Decimal) Remainder(other Decimal) (Decimal, error) {
 	aNeg, aScale, aMant := d.unpack()
 	_, bScale, bMant := other.unpack()
 	if bMant.isZero() {
-		return Decimal{}, false
+		return Decimal{}, fmt.Errorf("decimal: remainder: %w", ErrDivideByZero)
 	}
 	if aMant.isZero() {
-		return Decimal{}, true
+		return Decimal{}, nil
 	}
 
 	scale := max(aScale, bScale)
 	numerator, ok := scaleUp(aMant, int(scale-aScale))
 	if !ok {
-		return Decimal{}, false
+		panic("decimal: internal remainder numerator overflow")
 	}
 
 	var divisor Mantissa
 	if scale == bScale {
 		divisor = bMant
+	} else if scaledDivisor, ok := mulPow10Mantissa(bMant, scale-bScale); ok {
+		divisor = scaledDivisor
 	} else {
-		divisor, ok = mulPow10Mantissa(bMant, scale-bScale)
-		if !ok {
-			return pack(aNeg, scale, aMant), true
-		}
+		return pack(aNeg, scale, aMant), nil
 	}
 
 	var remainder Mantissa
@@ -226,138 +163,59 @@ func (d Decimal) Remainder(other Decimal) (Decimal, bool) {
 	} else {
 		_, remainder = divMod192By96(numerator, divisor)
 	}
-	return pack(aNeg, scale, remainder), true
+	return pack(aNeg, scale, remainder), nil
 }
 
-func divScaledSmall(num uint192, divisor uint64, negative bool, scale int) (Decimal, bool) {
-	q, rem := num.divModSmall(divisor)
-	if roundSmallDivisorQuotient(rem, divisor) {
-		var ok bool
-		q, ok = q.add(uint192{lo: oneMantissa.lo})
-		if !ok {
-			return Decimal{}, false
+func powerOfTenDivisorExponent(m Mantissa, scale uint8) (int, bool) {
+	power := 0
+	for {
+		if m == oneMantissa {
+			return power - int(scale), true
 		}
-	}
-	mantissa, fits := q.mantissa()
-	if !fits {
-		return Decimal{}, false
-	}
-	res := pack(negative, uint8FromScale(scale), mantissa)
-	if rem == 0 {
-		res = res.Normalize()
-	}
-	return res, true
-}
-
-// roundSmallDivisorQuotient compares 2*remainder >= divisor without overflowing.
-func roundSmallDivisorQuotient(remainder, divisor uint64) bool {
-	return remainder >= divisor/2+divisor%2
-}
-
-func quotientFitsMantissa(n uint192, divisor Mantissa) bool {
-	thresholdHi := uint64(divisor.hi)<<32 | divisor.lo>>32
-	if n.hi != thresholdHi {
-		return n.hi < thresholdHi
-	}
-	return n.mid < divisor.lo<<32
-}
-
-func quotientFitsSmallMantissa(n uint192, divisor uint64) bool {
-	thresholdHi := divisor >> 32
-	if n.hi != thresholdHi {
-		return n.hi < thresholdHi
-	}
-	return n.mid < divisor<<32
-}
-
-func powerOfTenDivisorScale(m Mantissa, scale uint8) (uint8, bool) {
-	if m == oneMantissa {
-		return scale, true
-	}
-	if scale == 0 || m.lo&1 != 0 || (m.lo%5+uint64(m.hi)%5)%5 != 0 {
-		return 0, false
-	}
-	for scale > 0 {
 		q, r := m.divMod64(10)
 		if r != 0 {
 			return 0, false
 		}
 		m = q
-		scale--
-		if m == oneMantissa {
-			return scale, true
-		}
+		power++
 	}
-	return 0, false
 }
 
-func roundAndPack(negative bool, scale int, n uint192) (Decimal, bool) {
+func exactPack(negative bool, scale int, n uint384, op string) (Decimal, error) {
 	if n.isZero() {
-		return Decimal{}, true
+		return Decimal{}, nil
 	}
-	drop := max(0, scale-int(MaxScale))
-	q := n
-	var rem uint64
-	if drop > 0 {
-		q, rem = divPow10WithRoundingDigit(n, drop)
-	}
-	for ; drop <= scale; drop++ {
-		rounded := q
-		if drop > 0 && rem >= 5 {
-			rounded, _ = rounded.add(uint192{lo: oneMantissa.lo})
-		}
-		if mantissa, fits := rounded.mantissa(); fits {
-			return pack(negative, uint8FromScale(scale-drop), mantissa), true
-		}
-		if drop == scale {
-			break
-		}
-		q, rem = q.divModSmall(10)
-	}
-	return Decimal{}, false
-}
-
-// divPow10WithRoundingDigit returns floor(n/10^drop) and the first dropped digit.
-func divPow10WithRoundingDigit(n uint192, drop int) (uint192, uint64) {
-	if drop == 0 {
-		return n, 0
-	}
-	if drop == int(MaxScale) {
-		q, r := divMod192By96(n, pow10[MaxScale])
-		return q, firstDroppedDigitAtMaxScale(r)
-	}
-
-	q := n
-	for drop > 1 {
-		step := min(drop-1, 19)
-		q, _ = q.divModSmall(pow10[step].lo)
-		drop -= step
-	}
-	return q.divModSmall(10)
-}
-
-// pow10To27Multiples[d] is d*10^27, used to extract the first dropped digit
-// after dividing by 10^28 without another wide division.
-var pow10To27Multiples = [...]Mantissa{
-	NewMantissa(0x0, 0x0),
-	NewMantissa(0x33b2e3c, 0x9fd0803ce8000000),
-	NewMantissa(0x6765c79, 0x3fa10079d0000000),
-	NewMantissa(0x9b18ab5, 0xdf7180b6b8000000),
-	NewMantissa(0xcecb8f2, 0x7f4200f3a0000000),
-	NewMantissa(0x1027e72f, 0x1f12813088000000),
-	NewMantissa(0x1363156b, 0xbee3016d70000000),
-	NewMantissa(0x169e43a8, 0x5eb381aa58000000),
-	NewMantissa(0x19d971e4, 0xfe8401e740000000),
-	NewMantissa(0x1d14a021, 0x9e54822428000000),
-}
-
-func firstDroppedDigitAtMaxScale(remainder Mantissa) uint64 {
-	for digit := 9; digit > 0; digit-- {
-		if remainder.cmp(pow10To27Multiples[digit]) >= 0 {
-			return uint64(digit)
+	if scale <= int(MaxScale) {
+		if mantissa, fits := n.mantissa(); fits {
+			return pack(negative, uint8FromScale(scale), mantissa), nil
 		}
 	}
-	return 0
+	maxAtScale, ok := uint384FromMantissa(maxMantissa).scaleUp10(scale)
+	if !ok || n.cmp(maxAtScale) > 0 {
+		return Decimal{}, fmt.Errorf("decimal: %s: %w", op, ErrOverflow)
+	}
+	for scale > int(MaxScale) {
+		var rem uint64
+		n, rem = n.divModSmall(10)
+		if rem != 0 {
+			return Decimal{}, fmt.Errorf("decimal: %s: %w", op, ErrInexact)
+		}
+		scale--
+	}
+	for {
+		if mantissa, fits := n.mantissa(); fits {
+			return pack(negative, uint8FromScale(scale), mantissa), nil
+		}
+		if scale == 0 {
+			return Decimal{}, fmt.Errorf("decimal: %s: %w", op, ErrOverflow)
+		}
+		var rem uint64
+		n, rem = n.divModSmall(10)
+		if rem != 0 {
+			return Decimal{}, fmt.Errorf("decimal: %s: %w", op, ErrInexact)
+		}
+		scale--
+	}
 }
 
 func scaleUp(m Mantissa, scale int) (uint192, bool) {
@@ -497,25 +355,13 @@ func mul128By64(hi, lo, x uint64) (uint64, uint64, uint64) {
 	return hi1 + carry, mid, lo0
 }
 
-func roundDivQuotient(remainder Mantissa, divisor Mantissa) bool {
-	if remainder.isZero() {
-		return false
-	}
-	double, overflow := remainder.addChecked(remainder)
-	return overflow || double.cmp(divisor) >= 0
-}
-
 // uint192 is the private scratch width for decimal arithmetic. Decimal stores
-// a 96-bit mantissa; multiplying two mantissas can need 192 bits before
-// rounding, and division scales the numerator before a 96-bit divisor divide.
+// a 96-bit mantissa; multiplying two mantissas or aligning scales can need
+// 192 bits before the result is checked for exact representability.
 type uint192 struct {
 	hi  uint64
 	mid uint64
 	lo  uint64
-}
-
-func (n uint192) isZero() bool {
-	return n.hi == 0 && n.mid == 0 && n.lo == 0
 }
 
 func (n uint192) cmp(other uint192) int {

@@ -13,8 +13,11 @@ if err != nil {
 fmt.Println(d.String())
 fmt.Println(d.Normalize().String())
 
-fixed, ok := decimal.FromUint64(10).Rescale(5)
-fmt.Println(fixed.String(), ok)
+fixed, err := decimal.FromUint64(10).Rescale(5)
+if err != nil {
+	panic(err)
+}
+fmt.Println(fixed.String())
 ```
 
 Output:
@@ -22,7 +25,7 @@ Output:
 ```text
 10.00000
 10
-10.00000 true
+10.00000
 ```
 
 ## Model and Scale
@@ -63,9 +66,23 @@ required.
 Zero is always canonicalized and formats as `"0"`, even if parsed from `"-0"` or
 `"0.00000"`.
 
-General formatting preserves stored trailing zeroes. This package does not
-provide custom format strings; compose `Normalize`, `Rescale`, and `String`
-instead.
+General formatting preserves stored trailing zeroes. `StringFixed` and
+`AppendFixed` format with an exact requested scale without rounding. `Decimal`
+also implements `fmt.Formatter`, so `fmt.Sprintf("%.2f", d)` emits exactly two
+fractional digits when the value can be represented at that scale.
+
+## Exact Arithmetic
+
+`Add`, `Sub`, `Mul`, `Div`, `Remainder`, and `Rescale` return `(Decimal,
+error)`. Arithmetic is exact by default. If the exact result cannot be
+represented, the operation returns a wrapped sentinel error:
+
+- `ErrInexact`: non-zero precision would be lost.
+- `ErrOverflow`: the numeric result is outside the representable range.
+- `ErrDivideByZero`: division or remainder by zero.
+- `ErrInvalid`: invalid scale, mode, quantum, or clamp bounds.
+
+Use `errors.Is` to inspect errors.
 
 ## Rounding
 
@@ -81,17 +98,22 @@ happens when fractional digits are discarded:
   infinity.
 - `RoundTowardPositiveInfinity`: discarded digits round toward positive
   infinity.
+- `RoundAwayFromZero`: any discarded non-zero digits increase magnitude.
+- `RoundHalfTowardZero`: halfway cases round toward zero.
 
-`Round` returns `false` when `scale` or `mode` is invalid, or when the rounded
-mantissa cannot be represented. `RoundTo(scale)` is shorthand for
-`Round(scale, RoundHalfAwayFromZero)` when callers want the default rounding
-mode and do not need the success flag.
+`Quantize(scale, mode)` rounds to exactly `scale` fractional digits for non-zero
+results. `QuantizeTo(quantum, mode)` rounds to a multiple of a positive non-zero
+decimal quantum such as `0.05`; the quantum's stored scale controls the
+returned non-zero scale.
+
+`MulToScale`, `DivToScale`, `MulQuantized`, `DivQuantized`,
+`MulAddToScale`, and `MulAddQuantized` perform one-round policy arithmetic.
+Use these instead of rounding intermediate results.
 
 ## Verification
 
 ```sh
 go test ./...
 go test -race ./...
-go test -run=^$ -fuzz=FuzzDecimalArithmeticWithBigRatOracle -fuzztime=10s ./...
 go test -bench=. -benchmem ./...
 ```

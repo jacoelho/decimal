@@ -21,11 +21,29 @@ func ExampleParse_formatting() {
 }
 
 func ExampleDecimal_Rescale() {
-	fixed, ok := decimal.FromUint64(10).Rescale(5)
-	fmt.Println(fixed.String(), ok)
+	fixed, err := decimal.FromUint64(10).Rescale(5)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(fixed.String())
 
 	// Output:
-	// 10.00000 true
+	// 10.00000
+}
+
+func ExampleDecimal_Quantize() {
+	d, err := decimal.Parse("10.005")
+	if err != nil {
+		panic(err)
+	}
+	fixed, err := d.Quantize(2, decimal.RoundHalfToEven)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(fixed.String())
+
+	// Output:
+	// 10.00
 }
 
 func ExampleDecimal_Bits() {

@@ -241,14 +241,14 @@ func TestNormalizeTrimsTrailingFractionalZeros(t *testing.T) {
 }
 
 func TestRescaleRejectsInvalidScaleAndOverflow(t *testing.T) {
-	if _, ok := decimal.FromUint64(1).Rescale(decimal.MaxScale + 1); ok {
-		t.Fatalf("Rescale above MaxScale succeeded")
+	if _, err := decimal.FromUint64(1).Rescale(decimal.MaxScale + 1); !errors.Is(err, decimal.ErrInvalid) {
+		t.Fatalf("Rescale above MaxScale error = %v, want ErrInvalid", err)
 	}
-	if _, ok := decimal.Max().Rescale(1); ok {
-		t.Fatalf("Rescale overflowing mantissa succeeded")
+	if _, err := decimal.Max().Rescale(1); !errors.Is(err, decimal.ErrOverflow) {
+		t.Fatalf("Rescale overflowing error = %v, want ErrOverflow", err)
 	}
-	if got, ok := (decimal.Decimal{}).Rescale(2); !ok || !got.IsZero() || got.Scale() != 0 {
-		t.Fatalf("zero Rescale(2) = %s scale %d ok %v, want canonical zero", got, got.Scale(), ok)
+	if got, err := (decimal.Decimal{}).Rescale(2); err != nil || !got.IsZero() || got.Scale() != 0 {
+		t.Fatalf("zero Rescale(2) = %s scale %d err %v, want canonical zero", got, got.Scale(), err)
 	}
 }
 
@@ -315,17 +315,17 @@ func TestMinMaxClamp(t *testing.T) {
 	one := decimal.FromUint64(1)
 	two := decimal.FromUint64(2)
 	three := decimal.FromUint64(3)
-	if got, ok := two.Clamp(one, three); !ok || !sameBits(got, two) {
-		t.Fatalf("2.Clamp(1, 3) = %s ok %v, want 2 true", got, ok)
+	if got, err := two.Clamp(one, three); err != nil || !sameBits(got, two) {
+		t.Fatalf("2.Clamp(1, 3) = %s err %v, want 2 nil", got, err)
 	}
-	if got, ok := (decimal.Decimal{}).Clamp(one, three); !ok || !sameBits(got, one) {
-		t.Fatalf("0.Clamp(1, 3) = %s ok %v, want 1 true", got, ok)
+	if got, err := (decimal.Decimal{}).Clamp(one, three); err != nil || !sameBits(got, one) {
+		t.Fatalf("0.Clamp(1, 3) = %s err %v, want 1 nil", got, err)
 	}
-	if got, ok := decimal.FromUint64(5).Clamp(one, three); !ok || !sameBits(got, three) {
-		t.Fatalf("5.Clamp(1, 3) = %s ok %v, want 3 true", got, ok)
+	if got, err := decimal.FromUint64(5).Clamp(one, three); err != nil || !sameBits(got, three) {
+		t.Fatalf("5.Clamp(1, 3) = %s err %v, want 3 nil", got, err)
 	}
-	if _, ok := two.Clamp(three, one); ok {
-		t.Fatalf("Clamp with min > max succeeded")
+	if _, err := two.Clamp(three, one); !errors.Is(err, decimal.ErrInvalid) {
+		t.Fatalf("Clamp with min > max error = %v, want ErrInvalid", err)
 	}
 }
 
@@ -343,9 +343,12 @@ func TestIntegerConversionsTruncateTowardZero(t *testing.T) {
 		{"-9223372036854775809", 0, false},
 	}
 	for _, tt := range int64Tests {
-		got, ok := mustParse(t, tt.in).Int64()
-		if got != tt.want || ok != tt.ok {
-			t.Fatalf("%s.Int64() = %d ok %v, want %d ok %v", tt.in, got, ok, tt.want, tt.ok)
+		got, err := mustParse(t, tt.in).Int64()
+		if got != tt.want || (err == nil) != tt.ok {
+			t.Fatalf("%s.Int64() = %d err %v, want %d ok %v", tt.in, got, err, tt.want, tt.ok)
+		}
+		if !tt.ok && !errors.Is(err, decimal.ErrOverflow) {
+			t.Fatalf("%s.Int64() error = %v, want ErrOverflow", tt.in, err)
 		}
 	}
 
@@ -361,9 +364,12 @@ func TestIntegerConversionsTruncateTowardZero(t *testing.T) {
 		{"18446744073709551616", 0, false},
 	}
 	for _, tt := range uint64Tests {
-		got, ok := mustParse(t, tt.in).Uint64()
-		if got != tt.want || ok != tt.ok {
-			t.Fatalf("%s.Uint64() = %d ok %v, want %d ok %v", tt.in, got, ok, tt.want, tt.ok)
+		got, err := mustParse(t, tt.in).Uint64()
+		if got != tt.want || (err == nil) != tt.ok {
+			t.Fatalf("%s.Uint64() = %d err %v, want %d ok %v", tt.in, got, err, tt.want, tt.ok)
+		}
+		if !tt.ok && !errors.Is(err, decimal.ErrOverflow) {
+			t.Fatalf("%s.Uint64() error = %v, want ErrOverflow", tt.in, err)
 		}
 	}
 
@@ -377,9 +383,12 @@ func TestIntegerConversionsTruncateTowardZero(t *testing.T) {
 		{"2147483648", 0, false},
 	}
 	for _, tt := range int32Tests {
-		got, ok := mustParse(t, tt.in).Int32()
-		if got != tt.want || ok != tt.ok {
-			t.Fatalf("%s.Int32() = %d ok %v, want %d ok %v", tt.in, got, ok, tt.want, tt.ok)
+		got, err := mustParse(t, tt.in).Int32()
+		if got != tt.want || (err == nil) != tt.ok {
+			t.Fatalf("%s.Int32() = %d err %v, want %d ok %v", tt.in, got, err, tt.want, tt.ok)
+		}
+		if !tt.ok && !errors.Is(err, decimal.ErrOverflow) {
+			t.Fatalf("%s.Int32() error = %v, want ErrOverflow", tt.in, err)
 		}
 	}
 
@@ -392,9 +401,12 @@ func TestIntegerConversionsTruncateTowardZero(t *testing.T) {
 		{"4294967296", 0, false},
 	}
 	for _, tt := range uint32Tests {
-		got, ok := mustParse(t, tt.in).Uint32()
-		if got != tt.want || ok != tt.ok {
-			t.Fatalf("%s.Uint32() = %d ok %v, want %d ok %v", tt.in, got, ok, tt.want, tt.ok)
+		got, err := mustParse(t, tt.in).Uint32()
+		if got != tt.want || (err == nil) != tt.ok {
+			t.Fatalf("%s.Uint32() = %d err %v, want %d ok %v", tt.in, got, err, tt.want, tt.ok)
+		}
+		if !tt.ok && !errors.Is(err, decimal.ErrOverflow) {
+			t.Fatalf("%s.Uint32() error = %v, want ErrOverflow", tt.in, err)
 		}
 	}
 }

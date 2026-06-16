@@ -1,6 +1,9 @@
 package decimal_test
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -76,12 +79,50 @@ func BenchmarkAppendText(b *testing.B) {
 	}
 }
 
+func BenchmarkFormatPadding(b *testing.B) {
+	value := mustBenchmarkParse("123456789.12")
+	for _, tc := range []struct {
+		name   string
+		format string
+	}{
+		{name: "space", format: "%100.2f"},
+		{name: "zero", format: "%0100.2f"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			for b.Loop() {
+				if _, err := fmt.Fprintf(io.Discard, tc.format, value); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkFormatStringVerbs(b *testing.B) {
+	value := mustBenchmarkParse("123456789.12")
+	for _, tc := range []struct {
+		name   string
+		format string
+	}{
+		{name: "s", format: "%s"},
+		{name: "v", format: "%v"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			for b.Loop() {
+				if _, err := fmt.Fprintf(io.Discard, tc.format, value); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkAdd(b *testing.B) {
 	for b.Loop() {
-		var ok bool
-		sinkDecimal, ok = benchA.Add(benchB)
-		if !ok {
-			b.Fatal("overflow")
+		var err error
+		sinkDecimal, err = benchA.Add(benchB)
+		if err != nil {
+			b.Fatal(err)
 		}
 	}
 }
@@ -92,21 +133,16 @@ func BenchmarkMul(b *testing.B) {
 		a, b decimal.Decimal
 	}{
 		{name: "exact", a: benchA, b: benchB},
-		{name: "rounded", a: decimal.MustNew(decimal.MaxMantissa(), decimal.MaxScale, false), b: decimal.FromUint64(9)},
-		{
-			name: "max_scale_by_max_scale",
-			a:    decimal.MustNew(decimal.MaxMantissa(), decimal.MaxScale, false),
-			b:    decimal.MustNew(decimal.MaxMantissa(), decimal.MaxScale, false),
-		},
+		{name: "scale_reduces_exactly", a: mustBenchmarkParse("1.2300"), b: mustBenchmarkParse("2.00")},
 	}
 
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
 			for b.Loop() {
-				var ok bool
-				sinkDecimal, ok = tc.a.Mul(tc.b)
-				if !ok {
-					b.Fatal("overflow")
+				var err error
+				sinkDecimal, err = tc.a.Mul(tc.b)
+				if err != nil {
+					b.Fatal(err)
 				}
 			}
 		})
@@ -118,30 +154,57 @@ func BenchmarkDiv(b *testing.B) {
 		name     string
 		dividend decimal.Decimal
 		divisor  decimal.Decimal
+		wantErr  error
 	}{
-		{name: "baseline", dividend: benchA, divisor: benchB},
 		{name: "by_one", dividend: benchA, divisor: decimal.FromUint64(1)},
 		{name: "by_minus_one", dividend: benchA, divisor: decimal.FromInt64(-1)},
+		{name: "by_ten", dividend: benchA, divisor: decimal.FromUint64(10)},
 		{name: "exact", dividend: mustBenchmarkParse("123456789.123456789"), divisor: mustBenchmarkParse("0.000001")},
-		{name: "repeating", dividend: decimal.FromUint64(1), divisor: decimal.FromUint64(3)},
+		{name: "one_eighth", dividend: decimal.FromUint64(1), divisor: decimal.FromUint64(8)},
+		{name: "one_fourth", dividend: decimal.FromUint64(1), divisor: decimal.FromUint64(4)},
+		{name: "one_third_inexact", dividend: decimal.FromUint64(1), divisor: decimal.FromUint64(3), wantErr: decimal.ErrInexact},
+		{name: "near_max_overflow", dividend: maxMinus(7), divisor: mustBenchmarkParse("0.9999999999999999999999999999"), wantErr: decimal.ErrOverflow},
 		{name: "max_power_exact", dividend: decimal.FromUint64(1), divisor: decimal.MustNew(decimal.MantissaFromUint64(1), decimal.MaxScale, false)},
 		{name: "max_power_noncanonical", dividend: decimal.FromUint64(1), divisor: decimal.MustNew(decimal.MantissaFromUint64(10), decimal.MaxScale, false)},
-		{name: "max_power_repeating", dividend: decimal.FromUint64(1), divisor: decimal.MustNew(decimal.MantissaFromUint64(3), decimal.MaxScale, false)},
-		{name: "max_power_96bit_divisor", dividend: decimal.FromUint64(1), divisor: decimal.MustNew(decimal.MaxMantissa(), decimal.MaxScale, false)},
-		{name: "small_divisor", dividend: mustBenchmarkParse("123456789123456789.123456789"), divisor: decimal.FromUint64(7)},
-		{name: "large_divisor", dividend: benchA, divisor: mustBenchmarkParse("987654321987654321.123456789")},
-		{name: "max_mantissa_large_divisor", dividend: decimal.Max(), divisor: mustBenchmarkParse("987654321987654321.123456789")},
-		{name: "underflow_zero", dividend: benchMaxScaleTiny, divisor: decimal.FromUint64(9)},
-		{name: "max_scale_nonzero", dividend: benchMaxScaleNonzero, divisor: decimal.FromUint64(3)},
 	}
 
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
 			for b.Loop() {
-				var ok bool
-				sinkDecimal, ok = tc.dividend.Div(tc.divisor)
-				if !ok {
-					b.Fatal("overflow")
+				var err error
+				sinkDecimal, err = tc.dividend.Div(tc.divisor)
+				if tc.wantErr != nil {
+					if !errors.Is(err, tc.wantErr) {
+						b.Fatalf("Div error = %v, want %v", err, tc.wantErr)
+					}
+					continue
+				}
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkDivToScale(b *testing.B) {
+	for _, tc := range []struct {
+		name     string
+		dividend decimal.Decimal
+		divisor  decimal.Decimal
+		scale    uint8
+	}{
+		{name: "repeating", dividend: decimal.FromUint64(1), divisor: decimal.FromUint64(3), scale: decimal.MaxScale},
+		{name: "small_divisor", dividend: mustBenchmarkParse("123456789123456789.123456789"), divisor: decimal.FromUint64(7), scale: 6},
+		{name: "underflow_zero", dividend: benchMaxScaleTiny, divisor: decimal.FromUint64(9), scale: decimal.MaxScale},
+		{name: "max_scale_nonzero", dividend: benchMaxScaleNonzero, divisor: decimal.FromUint64(3), scale: decimal.MaxScale},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			for b.Loop() {
+				var err error
+				sinkDecimal, err = tc.dividend.DivToScale(tc.divisor, tc.scale, decimal.RoundHalfAwayFromZero)
+				if err != nil {
+					b.Fatal(err)
 				}
 			}
 		})
@@ -161,10 +224,10 @@ func BenchmarkRemainder(b *testing.B) {
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			for b.Loop() {
-				var ok bool
-				sinkDecimal, ok = tc.dividend.Remainder(tc.divisor)
-				if !ok {
-					b.Fatal("remainder failed")
+				var err error
+				sinkDecimal, err = tc.dividend.Remainder(tc.divisor)
+				if err != nil {
+					b.Fatal(err)
 				}
 			}
 		})
@@ -185,10 +248,10 @@ func BenchmarkRound(b *testing.B) {
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			for b.Loop() {
-				var ok bool
-				sinkDecimal, ok = value.Round(tc.scale, tc.mode)
-				if !ok {
-					b.Fatal("round failed")
+				var err error
+				sinkDecimal, err = value.Round(tc.scale, tc.mode)
+				if err != nil {
+					b.Fatal(err)
 				}
 			}
 		})
@@ -196,7 +259,7 @@ func BenchmarkRound(b *testing.B) {
 }
 
 func BenchmarkRescale(b *testing.B) {
-	value := mustBenchmarkParse("123456789.123456789")
+	value := mustBenchmarkParse("123456789.120000000")
 	for _, tc := range []struct {
 		name  string
 		scale uint8
@@ -207,10 +270,10 @@ func BenchmarkRescale(b *testing.B) {
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			for b.Loop() {
-				var ok bool
-				sinkDecimal, ok = value.Rescale(tc.scale)
-				if !ok {
-					b.Fatal("rescale failed")
+				var err error
+				sinkDecimal, err = value.Rescale(tc.scale)
+				if err != nil {
+					b.Fatal(err)
 				}
 			}
 		})

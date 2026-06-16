@@ -2,6 +2,7 @@ package decimal
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 )
 
@@ -54,6 +55,10 @@ const (
 	RoundTowardNegativeInfinity
 	// RoundTowardPositiveInfinity rounds toward positive infinity.
 	RoundTowardPositiveInfinity
+	// RoundAwayFromZero rounds any discarded non-zero digits away from zero.
+	RoundAwayFromZero
+	// RoundHalfTowardZero rounds halfway cases toward zero.
+	RoundHalfTowardZero
 )
 
 var (
@@ -61,6 +66,13 @@ var (
 	ErrInvalid = errors.New("decimal: invalid")
 	// ErrOverflow reports a value that cannot fit in Decimal.
 	ErrOverflow = errors.New("decimal: overflow")
+	// ErrInexact reports an operation whose exact result cannot be represented.
+	ErrInexact = errors.New("decimal: inexact")
+	// ErrDivideByZero reports division or remainder by zero.
+	ErrDivideByZero = errors.New("decimal: divide by zero")
+
+	spacePaddingChunk = []byte("                                                                ")
+	zeroPaddingChunk  = []byte("0000000000000000000000000000000000000000000000000000000000000000")
 
 	maxMantissa = NewMantissa(^uint32(0), ^uint64(0))
 	oneMantissa = MantissaFromUint64(1)
@@ -263,54 +275,49 @@ func (d Decimal) Normalize() Decimal {
 }
 
 // Rescale returns d with a new scale. Increasing scale is exact and can
-// overflow. Decreasing scale rounds half away from zero.
-func (d Decimal) Rescale(scale uint8) (Decimal, bool) {
+// overflow. Decreasing scale succeeds only when discarded digits are zero.
+func (d Decimal) Rescale(scale uint8) (Decimal, error) {
 	if scale > MaxScale {
-		return Decimal{}, false
+		return Decimal{}, fmt.Errorf("decimal: rescale to %d: %w", scale, ErrInvalid)
 	}
 	neg, curScale, mantissa := d.unpack()
 	if mantissa.isZero() || scale == curScale {
-		return pack(neg, scale, mantissa), true
+		return pack(neg, scale, mantissa), nil
 	}
 	if scale > curScale {
 		up, ok := mulPow10Mantissa(mantissa, scale-curScale)
 		if !ok {
-			return Decimal{}, false
+			return Decimal{}, fmt.Errorf("decimal: rescale to %d: %w", scale, ErrOverflow)
 		}
-		return pack(neg, scale, up), true
+		return pack(neg, scale, up), nil
 	}
-	return pack(neg, scale, divRoundPow10(mantissa, curScale-scale)), true
+	quotient, remainder := divModPow10Mantissa(mantissa, curScale-scale)
+	if !remainder.isZero() {
+		return Decimal{}, fmt.Errorf("decimal: rescale to %d: %w", scale, ErrInexact)
+	}
+	return pack(neg, scale, quotient), nil
 }
 
 // Round returns d rounded to at most scale fractional digits using mode.
-func (d Decimal) Round(scale uint8, mode RoundingMode) (Decimal, bool) {
+func (d Decimal) Round(scale uint8, mode RoundingMode) (Decimal, error) {
 	if scale > MaxScale || !validRoundingMode(mode) {
-		return Decimal{}, false
+		return Decimal{}, fmt.Errorf("decimal: round to %d: %w", scale, ErrInvalid)
 	}
 
 	neg, curScale, mantissa := d.unpack()
 	if mantissa.isZero() || scale >= curScale {
-		return pack(neg, curScale, mantissa), true
+		return pack(neg, curScale, mantissa), nil
 	}
 
 	quotient, remainder := divModPow10Mantissa(mantissa, curScale-scale)
 	if shouldRoundUp(mode, neg, quotient, remainder, curScale-scale) {
 		rounded, overflow := quotient.addChecked(oneMantissa)
 		if overflow {
-			return Decimal{}, false
+			return Decimal{}, fmt.Errorf("decimal: round to %d: %w", scale, ErrOverflow)
 		}
 		quotient = rounded
 	}
-	return pack(neg, scale, quotient), true
-}
-
-// RoundTo returns d rounded to at most scale fractional digits.
-func (d Decimal) RoundTo(scale uint8) Decimal {
-	if scale >= d.Scale() {
-		return d
-	}
-	res, _ := d.Round(scale, RoundHalfAwayFromZero)
-	return res
+	return pack(neg, scale, quotient), nil
 }
 
 // Truncate returns the integral part of d, rounded toward zero.
@@ -413,19 +420,18 @@ func (d Decimal) Max(other Decimal) Decimal {
 	return other
 }
 
-// Clamp returns d constrained to [minimum, maximum]. The second result is false
-// when minimum is greater than maximum.
-func (d Decimal) Clamp(minimum, maximum Decimal) (Decimal, bool) {
+// Clamp returns d constrained to [minimum, maximum].
+func (d Decimal) Clamp(minimum, maximum Decimal) (Decimal, error) {
 	if minimum.Cmp(maximum) > 0 {
-		return Decimal{}, false
+		return Decimal{}, fmt.Errorf("decimal: clamp: %w", ErrInvalid)
 	}
 	if d.Cmp(minimum) < 0 {
-		return minimum, true
+		return minimum, nil
 	}
 	if d.Cmp(maximum) > 0 {
-		return maximum, true
+		return maximum, nil
 	}
-	return d, true
+	return d, nil
 }
 
 // IsInteger reports whether d has no non-zero fractional digits.
@@ -439,11 +445,11 @@ func (d Decimal) IsInteger() bool {
 }
 
 // Int64 returns d truncated toward zero as int64.
-func (d Decimal) Int64() (int64, bool) {
+func (d Decimal) Int64() (int64, error) {
 	neg := d.IsNegative()
 	mantissa := d.truncatedMantissa()
 	if mantissa.hi != 0 {
-		return 0, false
+		return 0, fmt.Errorf("decimal: int64: %w", ErrOverflow)
 	}
 
 	const (
@@ -452,51 +458,156 @@ func (d Decimal) Int64() (int64, bool) {
 	)
 	if neg {
 		if mantissa.lo == minInt64Magnitude {
-			return -1 << 63, true
+			return -1 << 63, nil
 		}
 		if mantissa.lo > maxInt64 {
-			return 0, false
+			return 0, fmt.Errorf("decimal: int64: %w", ErrOverflow)
 		}
-		return -int64(mantissa.lo), true
+		return -int64(mantissa.lo), nil
 	}
 	if mantissa.lo > maxInt64 {
-		return 0, false
+		return 0, fmt.Errorf("decimal: int64: %w", ErrOverflow)
 	}
-	return int64(mantissa.lo), true
+	return int64(mantissa.lo), nil
 }
 
 // Uint64 returns d truncated toward zero as uint64.
-func (d Decimal) Uint64() (uint64, bool) {
+func (d Decimal) Uint64() (uint64, error) {
 	neg := d.IsNegative()
 	mantissa := d.truncatedMantissa()
 	if mantissa.hi != 0 || neg && !mantissa.isZero() {
-		return 0, false
+		return 0, fmt.Errorf("decimal: uint64: %w", ErrOverflow)
 	}
-	return mantissa.lo, true
+	return mantissa.lo, nil
 }
 
 // Int32 returns d truncated toward zero as int32.
-func (d Decimal) Int32() (int32, bool) {
-	v, ok := d.Int64()
-	if !ok || v < -1<<31 || v >= 1<<31 {
-		return 0, false
+func (d Decimal) Int32() (int32, error) {
+	v, err := d.Int64()
+	if err != nil {
+		return 0, fmt.Errorf("decimal: int32: %w", ErrOverflow)
 	}
-	return int32(v), true
+	if v < -1<<31 || v >= 1<<31 {
+		return 0, fmt.Errorf("decimal: int32: %w", ErrOverflow)
+	}
+	return int32(v), nil
 }
 
 // Uint32 returns d truncated toward zero as uint32.
-func (d Decimal) Uint32() (uint32, bool) {
-	v, ok := d.Uint64()
-	if !ok || v > uint64(^uint32(0)) {
-		return 0, false
+func (d Decimal) Uint32() (uint32, error) {
+	v, err := d.Uint64()
+	if err != nil {
+		return 0, fmt.Errorf("decimal: uint32: %w", ErrOverflow)
 	}
-	return uint32(v), true
+	if v > uint64(^uint32(0)) {
+		return 0, fmt.Errorf("decimal: uint32: %w", ErrOverflow)
+	}
+	return uint32(v), nil
 }
 
 // String returns the decimal string form, preserving scale for non-zero values.
 func (d Decimal) String() string {
 	var buf [64]byte
 	return string(d.appendText(buf[:0]))
+}
+
+// StringFixed returns d formatted with exactly scale fractional digits.
+// It returns ErrInexact if non-zero digits would need to be discarded.
+func (d Decimal) StringFixed(scale uint8) (string, error) {
+	var buf [64]byte
+	out, err := d.AppendFixed(buf[:0], scale)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// AppendFixed appends d formatted with exactly scale fractional digits.
+// It returns ErrInexact if non-zero digits would need to be discarded.
+func (d Decimal) AppendFixed(dst []byte, scale uint8) ([]byte, error) {
+	if scale > MaxScale {
+		return dst, fmt.Errorf("decimal: fixed scale %d: %w", scale, ErrInvalid)
+	}
+	neg, curScale, mantissa := d.unpack()
+	if mantissa.isZero() {
+		if scale == 0 {
+			return append(dst, '0'), nil
+		}
+		dst = append(dst, '0', '.')
+		return appendZeros(dst, int(scale)), nil
+	}
+	if scale < curScale {
+		quotient, remainder := divModPow10Mantissa(mantissa, curScale-scale)
+		if !remainder.isZero() {
+			return dst, fmt.Errorf("decimal: fixed scale %d: %w", scale, ErrInexact)
+		}
+		mantissa = quotient
+		curScale = scale
+	}
+
+	if neg {
+		dst = append(dst, '-')
+	}
+
+	if mantissa.hi == 0 {
+		var digits [20]byte
+		dst = appendScaledDigits(dst, strconv.AppendUint(digits[:0], mantissa.lo, 10), curScale)
+		return appendFixedTrailingZeros(dst, curScale, scale), nil
+	}
+	var digits [29]byte
+	dst = appendScaledDigits(dst, appendMantissaDigits(digits[:0], mantissa), curScale)
+	return appendFixedTrailingZeros(dst, curScale, scale), nil
+}
+
+// Format implements fmt.Formatter.
+func (d Decimal) Format(s fmt.State, verb rune) {
+	var buf [96]byte
+	out := buf[:0]
+	var err error
+
+	switch verb {
+	case 'v':
+		if s.Flag('#') {
+			formatString(s, verb, d.String())
+			return
+		}
+		out = applyTextPrecision(s, d.appendText(out))
+		writeFormattedText(s, out)
+		return
+	case 's':
+		out = applyTextPrecision(s, d.appendText(out))
+		writeFormattedText(s, out)
+		return
+	case 'q', 'x', 'X':
+		formatString(s, verb, d.String())
+		return
+	case 'f':
+		if precision, ok := s.Precision(); ok {
+			if precision < 0 || precision > int(MaxScale) {
+				if _, writeErr := fmt.Fprintf(s, "%%!%c(decimal.Decimal=precision %d exceeds MaxScale)", verb, precision); writeErr != nil {
+					return
+				}
+				return
+			}
+			out, err = d.AppendFixed(out, uint8(precision))
+			if err != nil {
+				if _, writeErr := fmt.Fprintf(s, "%%!%c(decimal.Decimal=%v)", verb, err); writeErr != nil {
+					return
+				}
+				return
+			}
+		} else {
+			out = d.appendText(out)
+		}
+		out = applyFormatSign(s, out)
+	default:
+		if _, err := fmt.Fprintf(s, "%%!%c(decimal.Decimal=%s)", verb, d.String()); err != nil {
+			return
+		}
+		return
+	}
+
+	writeFormattedNumber(s, out)
 }
 
 // AppendText appends the decimal string form to dst.
@@ -592,6 +703,16 @@ func appendScaledDigits(dst, digits []byte, scale uint8) []byte {
 	return append(dst, digits[split:]...)
 }
 
+func appendFixedTrailingZeros(dst []byte, curScale, scale uint8) []byte {
+	if scale == curScale {
+		return dst
+	}
+	if curScale == 0 {
+		dst = append(dst, '.')
+	}
+	return appendZeros(dst, int(scale-curScale))
+}
+
 func pack(negative bool, scale uint8, mantissa Mantissa) Decimal {
 	if mantissa.isZero() {
 		return Decimal{}
@@ -616,6 +737,126 @@ func appendZeros(dst []byte, n int) []byte {
 		dst = append(dst, '0')
 	}
 	return dst
+}
+
+func writeFormattedNumber(s fmt.State, text []byte) {
+	writeFormatted(s, text, true)
+}
+
+func writeFormattedText(s fmt.State, text []byte) {
+	writeFormatted(s, text, false)
+}
+
+func writeFormatted(s fmt.State, text []byte, signAware bool) {
+	width, hasWidth := s.Width()
+	if !hasWidth || width <= len(text) {
+		if _, err := s.Write(text); err != nil {
+			return
+		}
+		return
+	}
+
+	pad := width - len(text)
+	zeroPad := s.Flag('0') && !s.Flag('-')
+	if signAware && zeroPad && len(text) > 0 && isSignByte(text[0]) {
+		if _, err := s.Write(text[:1]); err != nil {
+			return
+		}
+		if !writePadding(s, pad, '0') {
+			return
+		}
+		if _, err := s.Write(text[1:]); err != nil {
+			return
+		}
+		return
+	}
+	if !s.Flag('-') {
+		if !writePadding(s, pad, paddingByte(s)) {
+			return
+		}
+	}
+	if _, err := s.Write(text); err != nil {
+		return
+	}
+	if s.Flag('-') {
+		if !writePadding(s, pad, ' ') {
+			return
+		}
+	}
+}
+
+func applyTextPrecision(s fmt.State, text []byte) []byte {
+	precision, ok := s.Precision()
+	if !ok || precision >= len(text) {
+		return text
+	}
+	return text[:precision]
+}
+
+func formatString(s fmt.State, verb rune, text string) {
+	var spec []byte
+	spec = append(spec, '%')
+	for _, flag := range []byte{'#', '0', '+', '-', ' '} {
+		if s.Flag(int(flag)) {
+			spec = append(spec, flag)
+		}
+	}
+	if width, ok := s.Width(); ok {
+		spec = strconv.AppendInt(spec, int64(width), 10)
+	}
+	if precision, ok := s.Precision(); ok {
+		spec = append(spec, '.')
+		spec = strconv.AppendInt(spec, int64(precision), 10)
+	}
+	spec = append(spec, string(verb)...)
+	if _, err := fmt.Fprintf(s, string(spec), text); err != nil {
+		return
+	}
+}
+
+func applyFormatSign(s fmt.State, text []byte) []byte {
+	if len(text) == 0 || isSignByte(text[0]) {
+		return text
+	}
+	var sign byte
+	switch {
+	case s.Flag('+'):
+		sign = '+'
+	case s.Flag(' '):
+		sign = ' '
+	default:
+		return text
+	}
+	text = append(text, 0)
+	copy(text[1:], text[:len(text)-1])
+	text[0] = sign
+	return text
+}
+
+func isSignByte(b byte) bool {
+	return b == '-' || b == '+' || b == ' '
+}
+
+func paddingByte(s fmt.State) byte {
+	if s.Flag('0') && !s.Flag('-') {
+		return '0'
+	}
+	return ' '
+}
+
+func writePadding(s fmt.State, n int, pad byte) bool {
+	chunk := spacePaddingChunk
+	if pad == '0' {
+		chunk = zeroPaddingChunk
+	}
+	for n > 0 {
+		width := min(n, len(chunk))
+		if _, err := s.Write(chunk[:width]); err != nil {
+			return false
+		}
+		n -= width
+	}
+	return true
 }
 
 func splitUint64(v uint64) (lo, hi uint32) {
@@ -683,7 +924,7 @@ func divModPow10Mantissa(m Mantissa, scale uint8) (Mantissa, Mantissa) {
 }
 
 func validRoundingMode(mode RoundingMode) bool {
-	return mode <= RoundTowardPositiveInfinity
+	return mode <= RoundHalfTowardZero
 }
 
 func shouldRoundUp(mode RoundingMode, negative bool, quotient, remainder Mantissa, drop uint8) bool {
@@ -702,6 +943,10 @@ func shouldRoundUp(mode RoundingMode, negative bool, quotient, remainder Mantiss
 		return negative
 	case RoundTowardPositiveInfinity:
 		return !negative
+	case RoundAwayFromZero:
+		return true
+	case RoundHalfTowardZero:
+		return remainder.cmp(halfPow10(drop)) > 0
 	default:
 		panic("decimal: invalid rounding mode")
 	}
@@ -722,32 +967,6 @@ func (d Decimal) truncatedMantissa() Mantissa {
 	}
 	quotient, _ := divModPow10Mantissa(mantissa, scale)
 	return quotient
-}
-
-func divRoundPow10(m Mantissa, scale uint8) Mantissa {
-	if scale == 0 || m.isZero() {
-		return m
-	}
-	if scale == 1 {
-		q, remainder := m.divMod64(10)
-		if remainder >= 5 {
-			rounded, overflow := q.addChecked(oneMantissa)
-			if overflow {
-				panic("decimal: internal pow10 rounding overflow")
-			}
-			q = rounded
-		}
-		return q
-	}
-	q, remainder := divModPow10Mantissa(m, scale)
-	if remainder.cmp(halfPow10(scale)) >= 0 {
-		rounded, overflow := q.addChecked(oneMantissa)
-		if overflow {
-			panic("decimal: internal pow10 rounding overflow")
-		}
-		q = rounded
-	}
-	return q
 }
 
 func (d Decimal) isZero() bool {
