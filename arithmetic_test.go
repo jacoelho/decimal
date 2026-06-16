@@ -3,11 +3,21 @@ package decimal_test
 import (
 	"math/big"
 	"math/rand"
+	"reflect"
 	"strings"
 	"testing"
+	"testing/quick"
 
 	"github.com/jacoelho/decimal"
 )
+
+type quickDecimal struct {
+	decimal.Decimal
+}
+
+func (quickDecimal) Generate(r *rand.Rand, _ int) reflect.Value {
+	return reflect.ValueOf(quickDecimal{Decimal: randomDecimal(r)})
+}
 
 func TestAddSubExamplesWithBigRatOracle(t *testing.T) {
 	tests := []struct {
@@ -325,10 +335,156 @@ func TestArithmeticEdgeCasesWithBigRatOracle(t *testing.T) {
 	}
 }
 
+func TestArithmeticOperationEdgeCases(t *testing.T) {
+	tests := []struct {
+		op   string
+		edge string
+		a    string
+		b    string
+		want string
+		ok   bool
+	}{
+		{op: "Add", edge: "left zero returns right operand representation", a: "0", b: "-1.2300", want: "-1.2300", ok: true},
+		{op: "Add", edge: "right zero preserves left operand representation", a: "1.2300", b: "0", want: "1.2300", ok: true},
+		{op: "Add", edge: "opposite signs cancel to canonical zero", a: "1.2300", b: "-1.2300", want: "0", ok: true},
+		{op: "Add", edge: "aligns unequal scales before adding", a: "1.2", b: "0.03", want: "1.23", ok: true},
+		{op: "Add", edge: "same sign negative operands", a: "-1.20", b: "-0.03", want: "-1.23", ok: true},
+		{op: "Add", edge: "integer overflow fails", a: decimal.Max().String(), b: decimal.Max().String(), ok: false},
+
+		{op: "Sub", edge: "subtracting zero preserves left operand representation", a: "1.2300", b: "0", want: "1.2300", ok: true},
+		{op: "Sub", edge: "zero minus nonzero negates with operand scale", a: "0", b: "1.2300", want: "-1.2300", ok: true},
+		{op: "Sub", edge: "equal operands cancel to canonical zero", a: "1.2300", b: "1.2300", want: "0", ok: true},
+		{op: "Sub", edge: "borrows across aligned fractional scales", a: "1.00", b: "0.001", want: "0.999", ok: true},
+		{op: "Sub", edge: "negative minus positive keeps negative sign", a: "-1.2", b: "0.3", want: "-1.5", ok: true},
+		{op: "Sub", edge: "rounding below Min fails", a: decimal.Min().String(), b: "0.5", ok: false},
+
+		{op: "Mul", edge: "zero operand returns canonical zero", a: "123.45", b: "0", want: "0", ok: true},
+		{op: "Mul", edge: "two negatives produce positive product", a: "-1.20", b: "-0.5", want: "0.600", ok: true},
+		{op: "Mul", edge: "result scale is sum of operand scales when exact", a: "1.20", b: "0.030", want: "0.03600", ok: true},
+		{op: "Mul", edge: "half quantum rounds away from zero", a: "0.5", b: "0.0000000000000000000000000001", want: "0.0000000000000000000000000001", ok: true},
+		{op: "Mul", edge: "tiny product rounds to canonical zero", a: "0.0000000000000000000000000001", b: "0.0000000000000000000000000001", want: "0", ok: true},
+		{op: "Mul", edge: "integer overflow fails", a: decimal.Max().String(), b: "2", ok: false},
+
+		{op: "Div", edge: "division by zero fails", a: "1", b: "0", ok: false},
+		{op: "Div", edge: "zero dividend returns canonical zero", a: "0", b: "-1.23", want: "0", ok: true},
+		{op: "Div", edge: "exact quotient is normalized", a: "1.00", b: "0.25", want: "4", ok: true},
+		{op: "Div", edge: "negative signs cancel", a: "-10", b: "-4", want: "2.5", ok: true},
+		{op: "Div", edge: "repeating quotient rounds at MaxScale", a: "1", b: "6", want: "0.1666666666666666666666666667", ok: true},
+		{op: "Div", edge: "quotient overflow fails", a: decimal.Max().String(), b: "0.1", ok: false},
+
+		{op: "Remainder", edge: "remainder by zero fails", a: "1", b: "0", ok: false},
+		{op: "Remainder", edge: "zero dividend returns canonical zero", a: "0", b: "-1.23", want: "0", ok: true},
+		{op: "Remainder", edge: "sign follows dividend", a: "-5.5", b: "2", want: "-1.5", ok: true},
+		{op: "Remainder", edge: "common scale is preserved for nonzero remainder", a: "5.00", b: "2", want: "1.00", ok: true},
+		{op: "Remainder", edge: "divisor larger than dividend returns dividend", a: "1.23", b: "4", want: "1.23", ok: true},
+		{op: "Remainder", edge: "exact multiple returns canonical zero", a: "4.00", b: "2.00", want: "0", ok: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.op+"/"+tt.edge, func(t *testing.T) {
+			a := mustParse(t, tt.a)
+			b := mustParse(t, tt.b)
+			got, ok := runArithmeticOperation(tt.op, a, b)
+			if ok != tt.ok {
+				t.Fatalf("%s %s %s ok = %v, want %v", a, tt.op, b, ok, tt.ok)
+			}
+			if ok && got.String() != tt.want {
+				t.Fatalf("%s %s %s = %s, want %s", a, tt.op, b, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRandomArithmeticWithBigRatOracle(t *testing.T) {
 	rng := rand.New(rand.NewSource(1)) //nolint:gosec // Deterministic test data, not cryptographic randomness.
 	for range 2048 {
 		assertBinaryArithmetic(t, randomDecimal(rng), randomDecimal(rng))
+	}
+}
+
+func TestArithmeticOperationsMatchBigRatProperties(t *testing.T) {
+	tests := []struct {
+		name  string
+		check func(testing.TB, decimal.Decimal, decimal.Decimal) bool
+	}{
+		{"Add", checkAddProperty},
+		{"Sub", checkSubProperty},
+		{"Mul", checkMulProperty},
+		{"Div", checkDivProperty},
+		{"Remainder", checkRemainderProperty},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &quick.Config{
+				MaxCount: 2048,
+				Rand:     rand.New(rand.NewSource(int64(100 + i))), //nolint:gosec // Deterministic property data.
+			}
+			if err := quick.Check(func(a, b quickDecimal) bool {
+				return tt.check(t, a.Decimal, b.Decimal)
+			}, cfg); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRescaleMatchesBigRatProperties(t *testing.T) {
+	cfg := &quick.Config{
+		MaxCount: 2048,
+		Rand:     rand.New(rand.NewSource(200)), //nolint:gosec // Deterministic property data.
+	}
+	if err := quick.Check(func(d quickDecimal, scale uint8) bool {
+		return checkRescaleProperty(t, d.Decimal, scale)
+	}, cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRoundMatchesBigIntProperties(t *testing.T) {
+	modes := []decimal.RoundingMode{
+		decimal.RoundHalfAwayFromZero,
+		decimal.RoundHalfToEven,
+		decimal.RoundTowardZero,
+		decimal.RoundTowardNegativeInfinity,
+		decimal.RoundTowardPositiveInfinity,
+	}
+	for i, mode := range modes {
+		t.Run(roundingModeName(mode), func(t *testing.T) {
+			cfg := &quick.Config{
+				MaxCount: 2048,
+				Rand:     rand.New(rand.NewSource(int64(300 + i))), //nolint:gosec // Deterministic property data.
+			}
+			if err := quick.Check(func(d quickDecimal, scale uint8) bool {
+				return checkRoundProperty(t, d.Decimal, scale, mode)
+			}, cfg); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRoundToMatchesRoundHalfAwayProperties(t *testing.T) {
+	cfg := &quick.Config{
+		MaxCount: 2048,
+		Rand:     rand.New(rand.NewSource(400)), //nolint:gosec // Deterministic property data.
+	}
+	if err := quick.Check(func(d quickDecimal, scale uint8) bool {
+		return checkRoundToProperty(t, d.Decimal, scale)
+	}, cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIntegralArithmeticOperationsMatchBigIntProperties(t *testing.T) {
+	cfg := &quick.Config{
+		MaxCount: 2048,
+		Rand:     rand.New(rand.NewSource(500)), //nolint:gosec // Deterministic property data.
+	}
+	if err := quick.Check(func(d quickDecimal) bool {
+		return checkIntegralProperty(t, d.Decimal)
+	}, cfg); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -448,6 +604,154 @@ func assertBinaryArithmetic(t *testing.T, a, b decimal.Decimal) {
 	assertDecimalResult(t, a, "%", b, got, ok, want, wantOK)
 }
 
+func runArithmeticOperation(op string, a, b decimal.Decimal) (decimal.Decimal, bool) {
+	switch op {
+	case "Add":
+		return a.Add(b)
+	case "Sub":
+		return a.Sub(b)
+	case "Mul":
+		return a.Mul(b)
+	case "Div":
+		return a.Div(b)
+	case "Remainder":
+		return a.Remainder(b)
+	default:
+		panic("unknown arithmetic operation: " + op)
+	}
+}
+
+func checkAddProperty(tb testing.TB, a, b decimal.Decimal) bool {
+	tb.Helper()
+	want, wantOK := roundedAtScale(new(big.Rat).Add(decimalRat(a), decimalRat(b)), int(max(a.Scale(), b.Scale())))
+	got, ok := a.Add(b)
+	return checkDecimalResult(tb, a, "+", b, got, ok, want, wantOK)
+}
+
+func checkSubProperty(tb testing.TB, a, b decimal.Decimal) bool {
+	tb.Helper()
+	want, wantOK := roundedAtScale(new(big.Rat).Sub(decimalRat(a), decimalRat(b)), int(max(a.Scale(), b.Scale())))
+	got, ok := a.Sub(b)
+	return checkDecimalResult(tb, a, "-", b, got, ok, want, wantOK)
+}
+
+func checkMulProperty(tb testing.TB, a, b decimal.Decimal) bool {
+	tb.Helper()
+	want, wantOK := roundedAtScale(new(big.Rat).Mul(decimalRat(a), decimalRat(b)), int(a.Scale())+int(b.Scale()))
+	got, ok := a.Mul(b)
+	return checkDecimalResult(tb, a, "*", b, got, ok, want, wantOK)
+}
+
+func checkDivProperty(tb testing.TB, a, b decimal.Decimal) bool {
+	tb.Helper()
+	want, wantOK := "", false
+	if b.Sign() != 0 {
+		want, wantOK = roundedDiv(new(big.Rat).Quo(decimalRat(a), decimalRat(b)))
+	}
+	got, ok := a.Div(b)
+	return checkDecimalResult(tb, a, "/", b, got, ok, want, wantOK)
+}
+
+func checkRemainderProperty(tb testing.TB, a, b decimal.Decimal) bool {
+	tb.Helper()
+	want, wantOK := "", false
+	if b.Sign() != 0 {
+		want, wantOK = remainderAtCommonScale(a, b)
+	}
+	got, ok := a.Remainder(b)
+	return checkDecimalResult(tb, a, "%", b, got, ok, want, wantOK)
+}
+
+func checkRescaleProperty(tb testing.TB, d decimal.Decimal, scale uint8) bool {
+	tb.Helper()
+	want, wantOK := rescaleOracle(d, scale)
+	got, ok := d.Rescale(scale)
+	if ok != wantOK {
+		tb.Logf("%s.Rescale(%d) ok = %v, want %v", d, scale, ok, wantOK)
+		return false
+	}
+	if ok && got.String() != want {
+		tb.Logf("%s.Rescale(%d) = %s, want %s", d, scale, got, want)
+		return false
+	}
+	return true
+}
+
+func checkRoundProperty(tb testing.TB, d decimal.Decimal, scale uint8, mode decimal.RoundingMode) bool {
+	tb.Helper()
+	want, wantOK := roundOracle(d, scale, mode)
+	got, ok := d.Round(scale, mode)
+	if ok != wantOK {
+		tb.Logf("%s.Round(%d, %s) ok = %v, want %v", d, scale, roundingModeName(mode), ok, wantOK)
+		return false
+	}
+	if ok && got.String() != want {
+		tb.Logf("%s.Round(%d, %s) = %s, want %s", d, scale, roundingModeName(mode), got, want)
+		return false
+	}
+	return true
+}
+
+func checkRoundToProperty(tb testing.TB, d decimal.Decimal, scale uint8) bool {
+	tb.Helper()
+	got := d.RoundTo(scale)
+	if scale >= d.Scale() {
+		if !sameBits(got, d) {
+			tb.Logf("%s.RoundTo(%d) = %s with different bits, want original representation", d, scale, got)
+			return false
+		}
+		return true
+	}
+
+	want, wantOK := roundOracle(d, scale, decimal.RoundHalfAwayFromZero)
+	if !wantOK {
+		tb.Logf("%s.RoundTo(%d) oracle overflowed", d, scale)
+		return false
+	}
+	if got.String() != want {
+		tb.Logf("%s.RoundTo(%d) = %s, want %s", d, scale, got, want)
+		return false
+	}
+	return true
+}
+
+func checkIntegralProperty(tb testing.TB, d decimal.Decimal) bool {
+	tb.Helper()
+	tests := []struct {
+		name string
+		got  decimal.Decimal
+		want string
+	}{
+		{"Truncate", d.Truncate(), integralOracle(d, "truncate")},
+		{"Floor", d.Floor(), integralOracle(d, "floor")},
+		{"Ceiling", d.Ceiling(), integralOracle(d, "ceiling")},
+	}
+	for _, tt := range tests {
+		if tt.got.String() != tt.want {
+			tb.Logf("%s.%s() = %s, want %s", d, tt.name, tt.got, tt.want)
+			return false
+		}
+	}
+	return true
+}
+
+func roundingModeName(mode decimal.RoundingMode) string {
+	switch mode {
+	case decimal.RoundHalfAwayFromZero:
+		return "RoundHalfAwayFromZero"
+	case decimal.RoundHalfToEven:
+		return "RoundHalfToEven"
+	case decimal.RoundTowardZero:
+		return "RoundTowardZero"
+	case decimal.RoundTowardNegativeInfinity:
+		return "RoundTowardNegativeInfinity"
+	case decimal.RoundTowardPositiveInfinity:
+		return "RoundTowardPositiveInfinity"
+	default:
+		return "invalid"
+	}
+}
+
 func randomDecimal(rng *rand.Rand) decimal.Decimal {
 	mantissa := decimal.NewMantissa(rng.Uint32(), rng.Uint64())
 	scale := randomScale(rng)
@@ -470,6 +774,19 @@ func assertDecimalResult(t *testing.T, a decimal.Decimal, op string, b decimal.D
 	if ok && got.String() != want {
 		t.Fatalf("%s %s %s = %s, want %s", a, op, b, got, want)
 	}
+}
+
+func checkDecimalResult(tb testing.TB, a decimal.Decimal, op string, b decimal.Decimal, got decimal.Decimal, ok bool, want string, wantOK bool) bool {
+	tb.Helper()
+	if ok != wantOK {
+		tb.Logf("%s %s %s ok = %v, want %v", a, op, b, ok, wantOK)
+		return false
+	}
+	if ok && got.String() != want {
+		tb.Logf("%s %s %s = %s, want %s", a, op, b, got, want)
+		return false
+	}
+	return true
 }
 
 func roundedAtScale(r *big.Rat, initialScale int) (string, bool) {
@@ -531,6 +848,91 @@ func remainderAtCommonScale(a, b decimal.Decimal) (string, bool) {
 	return formatOracle(rem, scale, aNeg), true
 }
 
+func rescaleOracle(d decimal.Decimal, scale uint8) (string, bool) {
+	if scale > decimal.MaxScale {
+		return "", false
+	}
+
+	negative := d.Sign() < 0
+	r := decimalRat(d)
+	if negative {
+		r.Neg(r)
+	}
+	q, _ := roundRat(r, int(scale))
+	if q.Cmp(mantissaBig(decimal.MaxMantissa())) > 0 {
+		return "", false
+	}
+	return formatOracle(q, int(scale), negative), true
+}
+
+func roundOracle(d decimal.Decimal, scale uint8, mode decimal.RoundingMode) (string, bool) {
+	if scale > decimal.MaxScale {
+		return "", false
+	}
+
+	mantissa, curScale, negative := d.Parts()
+	if mantissa == (decimal.Mantissa{}) || scale >= curScale {
+		return d.String(), true
+	}
+
+	quotient, remainder, divisor := divModDroppedScale(mantissa, curScale-scale)
+	if shouldRoundUpOracle(mode, negative, quotient, remainder, divisor) {
+		quotient.Add(quotient, big.NewInt(1))
+		if quotient.Cmp(mantissaBig(decimal.MaxMantissa())) > 0 {
+			return "", false
+		}
+	}
+	return formatOracle(quotient, int(scale), negative), true
+}
+
+func divModDroppedScale(mantissa decimal.Mantissa, drop uint8) (*big.Int, *big.Int, *big.Int) {
+	divisor := pow10Big(int(drop))
+	quotient, remainder := new(big.Int).QuoRem(mantissaBig(mantissa), divisor, new(big.Int))
+	return quotient, remainder, divisor
+}
+
+func shouldRoundUpOracle(mode decimal.RoundingMode, negative bool, quotient, remainder, divisor *big.Int) bool {
+	if remainder.Sign() == 0 {
+		return false
+	}
+
+	switch mode {
+	case decimal.RoundHalfAwayFromZero:
+		return twice(remainder).Cmp(divisor) >= 0
+	case decimal.RoundHalfToEven:
+		cmp := twice(remainder).Cmp(divisor)
+		return cmp > 0 || cmp == 0 && quotient.Bit(0) == 1
+	case decimal.RoundTowardZero:
+		return false
+	case decimal.RoundTowardNegativeInfinity:
+		return negative
+	case decimal.RoundTowardPositiveInfinity:
+		return !negative
+	default:
+		panic("decimal test: invalid rounding mode")
+	}
+}
+
+func integralOracle(d decimal.Decimal, operation string) string {
+	mantissa, scale, negative := d.Parts()
+	if mantissa == (decimal.Mantissa{}) || scale == 0 {
+		return d.String()
+	}
+
+	quotient, remainder, _ := divModDroppedScale(mantissa, scale)
+	switch operation {
+	case "floor":
+		if negative && remainder.Sign() != 0 {
+			quotient.Add(quotient, big.NewInt(1))
+		}
+	case "ceiling":
+		if !negative && remainder.Sign() != 0 {
+			quotient.Add(quotient, big.NewInt(1))
+		}
+	}
+	return formatOracle(quotient, 0, negative)
+}
+
 func roundRat(r *big.Rat, scale int) (*big.Int, *big.Int) {
 	scaled := new(big.Int).Mul(r.Num(), pow10Big(scale))
 	q, rem := new(big.Int).QuoRem(scaled, r.Denom(), new(big.Int))
@@ -590,4 +992,8 @@ func mantissaBig(u decimal.Mantissa) *big.Int {
 
 func pow10Big(scale int) *big.Int {
 	return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(scale)), nil)
+}
+
+func twice(n *big.Int) *big.Int {
+	return new(big.Int).Lsh(n, 1)
 }
