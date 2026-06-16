@@ -95,55 +95,65 @@ func (d Decimal) Div(other Decimal) (Decimal, bool) {
 	if aScale > bScale {
 		minScale = int(aScale - bScale)
 	}
+	neg := aNeg != bNeg
 	maxPower := int(bScale) + int(MaxScale) - int(aScale)
 	if maxPower <= len(pow10)-1 || bMant.hi != 0 {
-		for scale := int(MaxScale); scale >= minScale; scale-- {
-			power := int(bScale) + scale - int(aScale)
-			if power < 0 {
-				continue
-			}
-			num, ok := scaleUp(aMant, power)
-			if !ok {
-				// A quotient that fits in Decimal implies
-				// scaledNumerator < (maxMantissa+1)*maxMantissa < 2^192.
-				continue
-			}
-			var q uint192
-			exact := false
-			if bMant.hi == 0 {
-				var rem uint64
-				q, rem = num.divModSmall(bMant.lo)
-				if roundSmallDivisorQuotient(rem, bMant.lo) {
-					q, ok = q.add(uint192{lo: oneMantissa.lo})
-					if !ok {
-						continue
-					}
-				}
-				exact = rem == 0
-			} else {
-				var r Mantissa
-				q, r = divMod192By96(num, bMant)
-				if roundDivQuotient(r, bMant) {
-					q, ok = q.add(uint192{lo: oneMantissa.lo})
-					if !ok {
-						continue
-					}
-				}
-				exact = r.isZero()
-			}
-			mantissa, fits := q.mantissa()
-			if !fits {
-				continue
-			}
-			res := pack(aNeg != bNeg, uint8FromScale(scale), mantissa)
-			if exact {
-				res = res.Normalize()
-			}
-			return res, true
-		}
-		return Decimal{}, false
+		return divByScaledDivisor(aMant, bMant, aScale, bScale, minScale, neg)
 	}
+	return divBySmallDivisorLargeScale(aMant, bMant.lo, aScale, bScale, minScale, neg)
+}
 
+func divByScaledDivisor(aMant, bMant Mantissa, aScale, bScale uint8, minScale int, negative bool) (Decimal, bool) {
+	for scale := int(MaxScale); scale >= minScale; scale-- {
+		power := int(bScale) + scale - int(aScale)
+		if power < 0 {
+			continue
+		}
+		num, ok := scaleUp(aMant, power)
+		if !ok {
+			// A quotient that fits in Decimal implies
+			// scaledNumerator < (maxMantissa+1)*maxMantissa < 2^192.
+			continue
+		}
+		var q uint192
+		var exact bool
+		if bMant.hi == 0 {
+			var rem uint64
+			q, rem = num.divModSmall(bMant.lo)
+			if roundSmallDivisorQuotient(rem, bMant.lo) {
+				var ok bool
+				q, ok = q.add(uint192{lo: oneMantissa.lo})
+				if !ok {
+					continue
+				}
+			}
+			exact = rem == 0
+		} else {
+			var rem Mantissa
+			q, rem = divMod192By96(num, bMant)
+			if roundDivQuotient(rem, bMant) {
+				var ok bool
+				q, ok = q.add(uint192{lo: oneMantissa.lo})
+				if !ok {
+					continue
+				}
+			}
+			exact = rem.isZero()
+		}
+		mantissa, fits := q.mantissa()
+		if !fits {
+			continue
+		}
+		res := pack(negative, uint8FromScale(scale), mantissa)
+		if exact {
+			res = res.Normalize()
+		}
+		return res, true
+	}
+	return Decimal{}, false
+}
+
+func divBySmallDivisorLargeScale(aMant Mantissa, divisor uint64, aScale, bScale uint8, minScale int, negative bool) (Decimal, bool) {
 	var num uint192
 	numPower := 0
 	haveNum := false
@@ -152,7 +162,7 @@ func (d Decimal) Div(other Decimal) (Decimal, bool) {
 		if power < 0 {
 			continue
 		}
-		if haveNum && power == numPower-1 && power > len(pow10)-1 {
+		if haveNum && power == numPower-1 && power >= len(pow10) {
 			num, _ = num.divModSmall(10)
 			numPower = power
 		} else {
@@ -167,7 +177,7 @@ func (d Decimal) Div(other Decimal) (Decimal, bool) {
 			haveNum = true
 			numPower = power
 		}
-		if res, ok := divScaledSmall(num, bMant.lo, aNeg != bNeg, scale); ok {
+		if res, ok := divScaledSmall(num, divisor, negative, scale); ok {
 			return res, true
 		}
 	}

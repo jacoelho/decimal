@@ -439,7 +439,7 @@ func (d Decimal) IsInteger() bool {
 
 // Int64 returns d truncated toward zero as int64.
 func (d Decimal) Int64() (int64, bool) {
-	neg, _, _ := d.unpack()
+	neg := d.IsNegative()
 	mantissa := d.truncatedMantissa()
 	if mantissa.hi != 0 {
 		return 0, false
@@ -450,11 +450,11 @@ func (d Decimal) Int64() (int64, bool) {
 		minInt64Magnitude = maxInt64 + 1
 	)
 	if neg {
-		if mantissa.lo > minInt64Magnitude {
-			return 0, false
-		}
 		if mantissa.lo == minInt64Magnitude {
 			return -1 << 63, true
+		}
+		if mantissa.lo > maxInt64 {
+			return 0, false
 		}
 		return -int64(mantissa.lo), true
 	}
@@ -466,7 +466,7 @@ func (d Decimal) Int64() (int64, bool) {
 
 // Uint64 returns d truncated toward zero as uint64.
 func (d Decimal) Uint64() (uint64, bool) {
-	neg, _, _ := d.unpack()
+	neg := d.IsNegative()
 	mantissa := d.truncatedMantissa()
 	if mantissa.hi != 0 || neg && !mantissa.isZero() {
 		return 0, false
@@ -477,7 +477,7 @@ func (d Decimal) Uint64() (uint64, bool) {
 // Int32 returns d truncated toward zero as int32.
 func (d Decimal) Int32() (int32, bool) {
 	v, ok := d.Int64()
-	if !ok || v < -1<<31 || v > 1<<31-1 {
+	if !ok || v < -1<<31 || v >= 1<<31 {
 		return 0, false
 	}
 	return int32(v), true
@@ -531,11 +531,17 @@ func appendMantissaDigits(dst []byte, m Mantissa) []byte {
 	for !m.isZero() {
 		q, r := m.divMod1e9()
 		i--
-		chunks[i] = r
+		if i < 0 {
+			panic("decimal: internal mantissa chunk overflow")
+		}
+		chunks[i] = r //nolint:gosec // 96-bit mantissas require at most four base-1e9 chunks; i is checked above.
 		m = q
 	}
+	if i >= len(chunks) {
+		panic("decimal: internal empty mantissa chunks")
+	}
 
-	dst = strconv.AppendUint(dst, uint64(chunks[i]), 10)
+	dst = strconv.AppendUint(dst, uint64(chunks[i]), 10) //nolint:gosec // i is checked against len(chunks) before indexing.
 	for i++; i < len(chunks); i++ {
 		dst = appendNineDigits(dst, chunks[i])
 	}
@@ -544,7 +550,7 @@ func appendMantissaDigits(dst []byte, m Mantissa) []byte {
 
 func appendNineDigits(dst []byte, n uint32) []byte {
 	leading := n / 100_000_000
-	dst = append(dst, byte('0'+leading))
+	dst = append(dst, decimalDigitPairs[leading*2+1])
 	n -= leading * 100_000_000
 
 	pair := n / 1_000_000
