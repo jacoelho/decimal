@@ -34,10 +34,6 @@ func (n uint384) bit(i int) uint64 {
 	return n.w[i/64] >> uint(i%64) & 1
 }
 
-func (n *uint384) setBit(i int) {
-	n.w[i/64] |= uint64(1) << uint(i%64)
-}
-
 func (n uint384) lsh1() (uint384, bool) {
 	var out uint384
 	carry := uint64(0)
@@ -188,7 +184,7 @@ func (n uint384) divMod(divisor uint384) (uint384, uint384) {
 			if borrow {
 				panic("decimal: internal uint384 division borrow")
 			}
-			quotient.setBit(i)
+			quotient.w[i/64] |= uint64(1) << uint(i%64)
 		}
 	}
 	return quotient, remainder

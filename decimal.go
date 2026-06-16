@@ -584,12 +584,16 @@ func (d Decimal) Format(s fmt.State, verb rune) {
 	case 'f':
 		if precision, ok := s.Precision(); ok {
 			if precision < 0 || precision > int(MaxScale) {
-				_, _ = fmt.Fprintf(s, "%%!%c(decimal.Decimal=precision %d exceeds MaxScale)", verb, precision)
+				if _, writeErr := fmt.Fprintf(s, "%%!%c(decimal.Decimal=precision %d exceeds MaxScale)", verb, precision); writeErr != nil {
+					return
+				}
 				return
 			}
 			out, err = d.AppendFixed(out, uint8(precision))
 			if err != nil {
-				_, _ = fmt.Fprintf(s, "%%!%c(decimal.Decimal=%v)", verb, err)
+				if _, writeErr := fmt.Fprintf(s, "%%!%c(decimal.Decimal=%v)", verb, err); writeErr != nil {
+					return
+				}
 				return
 			}
 		} else {
@@ -597,7 +601,9 @@ func (d Decimal) Format(s fmt.State, verb rune) {
 		}
 		out = applyFormatSign(s, out)
 	default:
-		_, _ = fmt.Fprintf(s, "%%!%c(decimal.Decimal=%s)", verb, d.String())
+		if _, err := fmt.Fprintf(s, "%%!%c(decimal.Decimal=%s)", verb, d.String()); err != nil {
+			return
+		}
 		return
 	}
 
@@ -744,24 +750,38 @@ func writeFormattedText(s fmt.State, text []byte) {
 func writeFormatted(s fmt.State, text []byte, signAware bool) {
 	width, hasWidth := s.Width()
 	if !hasWidth || width <= len(text) {
-		_, _ = s.Write(text)
+		if _, err := s.Write(text); err != nil {
+			return
+		}
 		return
 	}
 
 	pad := width - len(text)
 	zeroPad := s.Flag('0') && !s.Flag('-')
 	if signAware && zeroPad && len(text) > 0 && isSignByte(text[0]) {
-		_, _ = s.Write(text[:1])
-		writePadding(s, pad, '0')
-		_, _ = s.Write(text[1:])
+		if _, err := s.Write(text[:1]); err != nil {
+			return
+		}
+		if !writePadding(s, pad, '0') {
+			return
+		}
+		if _, err := s.Write(text[1:]); err != nil {
+			return
+		}
 		return
 	}
 	if !s.Flag('-') {
-		writePadding(s, pad, paddingByte(s))
+		if !writePadding(s, pad, paddingByte(s)) {
+			return
+		}
 	}
-	_, _ = s.Write(text)
+	if _, err := s.Write(text); err != nil {
+		return
+	}
 	if s.Flag('-') {
-		writePadding(s, pad, ' ')
+		if !writePadding(s, pad, ' ') {
+			return
+		}
 	}
 }
 
@@ -789,7 +809,9 @@ func formatString(s fmt.State, verb rune, text string) {
 		spec = strconv.AppendInt(spec, int64(precision), 10)
 	}
 	spec = append(spec, string(verb)...)
-	_, _ = fmt.Fprintf(s, string(spec), text)
+	if _, err := fmt.Fprintf(s, string(spec), text); err != nil {
+		return
+	}
 }
 
 func applyFormatSign(s fmt.State, text []byte) []byte {
@@ -822,16 +844,19 @@ func paddingByte(s fmt.State) byte {
 	return ' '
 }
 
-func writePadding(s fmt.State, n int, pad byte) {
+func writePadding(s fmt.State, n int, pad byte) bool {
 	chunk := spacePaddingChunk
 	if pad == '0' {
 		chunk = zeroPaddingChunk
 	}
 	for n > 0 {
 		width := min(n, len(chunk))
-		_, _ = s.Write(chunk[:width])
+		if _, err := s.Write(chunk[:width]); err != nil {
+			return false
+		}
 		n -= width
 	}
+	return true
 }
 
 func splitUint64(v uint64) (lo, hi uint32) {

@@ -501,24 +501,28 @@ func maxMinus(v uint64) decimal.Decimal {
 }
 
 func checkExactAddProperty(tb testing.TB, a, b decimal.Decimal) bool {
+	tb.Helper()
 	got, err := a.Add(b)
 	want := new(big.Rat).Add(decimalRat(a), decimalRat(b))
 	return checkExactDecimalResult(tb, "Add", a, b, got, err, want)
 }
 
 func checkExactSubProperty(tb testing.TB, a, b decimal.Decimal) bool {
+	tb.Helper()
 	got, err := a.Sub(b)
 	want := new(big.Rat).Sub(decimalRat(a), decimalRat(b))
 	return checkExactDecimalResult(tb, "Sub", a, b, got, err, want)
 }
 
 func checkExactMulProperty(tb testing.TB, a, b decimal.Decimal) bool {
+	tb.Helper()
 	got, err := a.Mul(b)
 	want := new(big.Rat).Mul(decimalRat(a), decimalRat(b))
 	return checkExactDecimalResult(tb, "Mul", a, b, got, err, want)
 }
 
 func checkExactDivProperty(tb testing.TB, a, b decimal.Decimal) bool {
+	tb.Helper()
 	got, err := a.Div(b)
 	if b.IsZero() {
 		return checkError(tb, "Div", a, b, err, decimal.ErrDivideByZero)
@@ -528,6 +532,7 @@ func checkExactDivProperty(tb testing.TB, a, b decimal.Decimal) bool {
 }
 
 func checkExactRemainderProperty(tb testing.TB, a, b decimal.Decimal) bool {
+	tb.Helper()
 	got, err := a.Remainder(b)
 	if b.IsZero() {
 		return checkError(tb, "Remainder", a, b, err, decimal.ErrDivideByZero)
@@ -544,6 +549,7 @@ func checkExactRemainderProperty(tb testing.TB, a, b decimal.Decimal) bool {
 }
 
 func checkQuantizeProperty(tb testing.TB, d decimal.Decimal, scale uint8, mode decimal.RoundingMode) bool {
+	tb.Helper()
 	got, err := d.Quantize(scale, mode)
 	want, wantErr := quantizeRat(decimalRat(d), scale, mode)
 	if wantErr != nil {
@@ -572,6 +578,7 @@ func checkQuantizeProperty(tb testing.TB, d decimal.Decimal, scale uint8, mode d
 }
 
 func checkExactDecimalResult(tb testing.TB, op string, a, b, got decimal.Decimal, err error, want *big.Rat) bool {
+	tb.Helper()
 	wantDecimal, wantErr := exactDecimalOracle(want)
 	if wantErr != nil {
 		return checkError(tb, op, a, b, err, wantErr)
@@ -584,6 +591,7 @@ func checkExactDecimalResult(tb testing.TB, op string, a, b, got decimal.Decimal
 }
 
 func checkError(tb testing.TB, op string, a, b decimal.Decimal, err error, want error) bool {
+	tb.Helper()
 	if !errors.Is(err, want) {
 		tb.Errorf("%s %s %s error = %v, want %v", a, op, b, err, want)
 		return false
@@ -685,6 +693,7 @@ func shouldRoundUpRat(mode decimal.RoundingMode, negative bool, quotient, remain
 }
 
 func checkRatEqual(tb testing.TB, got decimal.Decimal, want *big.Rat) bool {
+	tb.Helper()
 	if decimalRat(got).Cmp(want) != 0 {
 		tb.Errorf("got %s (%s), want %s", got, decimalRat(got), want)
 		return false
@@ -726,6 +735,7 @@ func randomDecimal(rng *rand.Rand) decimal.Decimal {
 }
 
 func randomScale(rng *rand.Rand) uint8 {
+	//nolint:gosec // Intn is bounded by MaxScale (28), which fits in uint8.
 	return uint8(rng.Intn(int(decimal.MaxScale) + 1))
 }
 

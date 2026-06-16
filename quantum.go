@@ -109,7 +109,7 @@ func (d Decimal) MulAddQuantized(multiplier, addend, quantum Decimal, mode Round
 	}
 
 	negative := productNeg
-	magnitude := product
+	var magnitude uint384
 	if productNeg == cNeg {
 		var overflow bool
 		magnitude, overflow = product.add(add)
@@ -184,7 +184,6 @@ func quantizeRational(op string, negative bool, numerator, denominator uint384, 
 
 	quotient, remainder := divModWide(scaledNumerator, scaledDenominator)
 	if shouldRoundUpWide(mode, negative, quotient, remainder, scaledDenominator) {
-		var overflow bool
 		quotient, overflow = quotient.addOne()
 		if overflow {
 			return Decimal{}, fmt.Errorf("decimal: %s: %w", op, ErrOverflow)
