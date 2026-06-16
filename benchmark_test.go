@@ -127,6 +127,16 @@ func BenchmarkAdd(b *testing.B) {
 	}
 }
 
+func BenchmarkSub(b *testing.B) {
+	for b.Loop() {
+		var err error
+		sinkDecimal, err = benchA.Sub(benchB)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkMul(b *testing.B) {
 	cases := []struct {
 		name string
@@ -146,6 +156,40 @@ func BenchmarkMul(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func BenchmarkMulToScale(b *testing.B) {
+	cases := []struct {
+		name  string
+		a, b  decimal.Decimal
+		scale uint8
+	}{
+		{name: "cents", a: benchA, b: benchB, scale: 2},
+		{name: "exact_scale", a: mustBenchmarkParse("1.2300"), b: mustBenchmarkParse("2.00"), scale: 4},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			for b.Loop() {
+				var err error
+				sinkDecimal, err = tc.a.MulToScale(tc.b, tc.scale, decimal.RoundHalfAwayFromZero)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkMulQuantized(b *testing.B) {
+	quantum := mustBenchmarkParse("0.05")
+	for b.Loop() {
+		var err error
+		sinkDecimal, err = benchA.MulQuantized(benchB, quantum, decimal.RoundHalfAwayFromZero)
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
@@ -187,6 +231,17 @@ func BenchmarkDiv(b *testing.B) {
 	}
 }
 
+func BenchmarkDivQuantized(b *testing.B) {
+	quantum := mustBenchmarkParse("0.0001")
+	for b.Loop() {
+		var err error
+		sinkDecimal, err = benchA.DivQuantized(benchB, quantum, decimal.RoundHalfAwayFromZero)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkDivToScale(b *testing.B) {
 	for _, tc := range []struct {
 		name     string
@@ -211,6 +266,42 @@ func BenchmarkDivToScale(b *testing.B) {
 	}
 }
 
+func BenchmarkMulAddToScale(b *testing.B) {
+	cases := []struct {
+		name              string
+		value, multiplier decimal.Decimal
+		addend            decimal.Decimal
+		scale             uint8
+	}{
+		{name: "same_sign", value: benchA, multiplier: benchB, addend: mustBenchmarkParse("12.34"), scale: 2},
+		{name: "subtract_addend", value: benchA, multiplier: benchB.Neg(), addend: mustBenchmarkParse("12.34"), scale: 2},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			for b.Loop() {
+				var err error
+				sinkDecimal, err = tc.value.MulAddToScale(tc.multiplier, tc.addend, tc.scale, decimal.RoundHalfAwayFromZero)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkMulAddQuantized(b *testing.B) {
+	quantum := mustBenchmarkParse("0.05")
+	addend := mustBenchmarkParse("12.34")
+	for b.Loop() {
+		var err error
+		sinkDecimal, err = benchA.MulAddQuantized(benchB, addend, quantum, decimal.RoundHalfAwayFromZero)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkRemainder(b *testing.B) {
 	for _, tc := range []struct {
 		name     string
@@ -226,6 +317,50 @@ func BenchmarkRemainder(b *testing.B) {
 			for b.Loop() {
 				var err error
 				sinkDecimal, err = tc.dividend.Remainder(tc.divisor)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkQuantize(b *testing.B) {
+	value := mustBenchmarkParse("123456789.123456789")
+	for _, tc := range []struct {
+		name  string
+		scale uint8
+		mode  decimal.RoundingMode
+	}{
+		{name: "half_away", scale: 2, mode: decimal.RoundHalfAwayFromZero},
+		{name: "half_even", scale: 2, mode: decimal.RoundHalfToEven},
+		{name: "toward_zero", scale: 2, mode: decimal.RoundTowardZero},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			for b.Loop() {
+				var err error
+				sinkDecimal, err = value.Quantize(tc.scale, tc.mode)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkQuantizeTo(b *testing.B) {
+	value := mustBenchmarkParse("123456789.123456789")
+	for _, tc := range []struct {
+		name    string
+		quantum decimal.Decimal
+	}{
+		{name: "cent", quantum: mustBenchmarkParse("0.01")},
+		{name: "nickel", quantum: mustBenchmarkParse("0.05")},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			for b.Loop() {
+				var err error
+				sinkDecimal, err = value.QuantizeTo(tc.quantum, decimal.RoundHalfAwayFromZero)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -255,6 +390,38 @@ func BenchmarkRound(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func BenchmarkTruncate(b *testing.B) {
+	value := mustBenchmarkParse("-123456789.123456789")
+	for b.Loop() {
+		sinkDecimal = value.Truncate()
+	}
+}
+
+func BenchmarkFloor(b *testing.B) {
+	value := mustBenchmarkParse("-123456789.123456789")
+	for b.Loop() {
+		sinkDecimal = value.Floor()
+	}
+}
+
+func BenchmarkCeiling(b *testing.B) {
+	value := mustBenchmarkParse("123456789.123456789")
+	for b.Loop() {
+		sinkDecimal = value.Ceiling()
+	}
+}
+
+func BenchmarkIsInteger(b *testing.B) {
+	value := mustBenchmarkParse("123456789.000000000")
+	var sinkBool bool
+	for b.Loop() {
+		sinkBool = value.IsInteger()
+	}
+	if sinkBool {
+		sinkDecimal = value
 	}
 }
 
