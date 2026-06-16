@@ -115,6 +115,9 @@ func divByScaledDivisor(aMant, bMant Mantissa, aScale, bScale uint8, minScale in
 			// scaledNumerator < (maxMantissa+1)*maxMantissa < 2^192.
 			continue
 		}
+		if !quotientFitsMantissa(num, bMant) {
+			continue
+		}
 		var q uint192
 		var exact bool
 		if bMant.hi == 0 {
@@ -176,6 +179,9 @@ func divBySmallDivisorLargeScale(aMant Mantissa, divisor uint64, aScale, bScale 
 			}
 			haveNum = true
 			numPower = power
+		}
+		if !quotientFitsSmallMantissa(num, divisor) {
+			continue
 		}
 		if res, ok := divScaledSmall(num, divisor, negative, scale); ok {
 			return res, true
@@ -246,6 +252,22 @@ func divScaledSmall(num uint192, divisor uint64, negative bool, scale int) (Deci
 // roundSmallDivisorQuotient compares 2*remainder >= divisor without overflowing.
 func roundSmallDivisorQuotient(remainder, divisor uint64) bool {
 	return remainder >= divisor/2+divisor%2
+}
+
+func quotientFitsMantissa(n uint192, divisor Mantissa) bool {
+	thresholdHi := uint64(divisor.hi)<<32 | divisor.lo>>32
+	if n.hi != thresholdHi {
+		return n.hi < thresholdHi
+	}
+	return n.mid < divisor.lo<<32
+}
+
+func quotientFitsSmallMantissa(n uint192, divisor uint64) bool {
+	thresholdHi := divisor >> 32
+	if n.hi != thresholdHi {
+		return n.hi < thresholdHi
+	}
+	return n.mid < divisor<<32
 }
 
 func powerOfTenDivisorScale(m Mantissa, scale uint8) (uint8, bool) {
@@ -342,6 +364,9 @@ func scaleUp(m Mantissa, scale int) (uint192, bool) {
 	if scale == 0 {
 		return uint192{mid: uint64(m.hi), lo: m.lo}, true
 	}
+	if scale <= 19 {
+		return fullMul96By64(m, pow10[scale].lo), true
+	}
 
 	step := min(scale, len(pow10)-1)
 	res := fullMul96(m, pow10[step])
@@ -349,13 +374,24 @@ func scaleUp(m Mantissa, scale int) (uint192, bool) {
 	for scale > 0 {
 		step = min(scale, len(pow10)-1)
 		var ok bool
-		res, ok = res.mul96(pow10[step])
+		if step <= 19 {
+			res, ok = res.mul64(pow10[step].lo)
+		} else {
+			res, ok = res.mul96(pow10[step])
+		}
 		if !ok {
 			return uint192{}, false
 		}
 		scale -= step
 	}
 	return res, true
+}
+
+func fullMul96By64(a Mantissa, b uint64) uint192 {
+	llHi, llLo := bits.Mul64(a.lo, b)
+	hlHi, hlLo := bits.Mul64(uint64(a.hi), b)
+	mid, carry := bits.Add64(llHi, hlLo, 0)
+	return uint192{hi: hlHi + carry, mid: mid, lo: llLo}
 }
 
 func fullMul96(a, b Mantissa) uint192 {
@@ -545,6 +581,16 @@ func (n uint192) mul96(m Mantissa) (uint192, bool) {
 		return uint192{}, false
 	}
 	return uint192{hi: out[2], mid: out[1], lo: out[0]}, !overflow
+}
+
+func (n uint192) mul64(m uint64) (uint192, bool) {
+	hi0, lo := bits.Mul64(n.lo, m)
+	hi1, lo1 := bits.Mul64(n.mid, m)
+	hi2, lo2 := bits.Mul64(n.hi, m)
+
+	mid, carry := bits.Add64(hi0, lo1, 0)
+	hi, carry := bits.Add64(hi1, lo2, carry)
+	return uint192{hi: hi, mid: mid, lo: lo}, hi2 == 0 && carry == 0
 }
 
 func addMul64Into(w0, w1, w2, w3 *uint64, a, b uint64) bool {
