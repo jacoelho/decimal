@@ -12,6 +12,7 @@ import (
 var (
 	two96    = new(big.Int).Lsh(big.NewInt(1), 96)
 	two192   = new(big.Int).Lsh(big.NewInt(1), 192)
+	two384   = new(big.Int).Lsh(big.NewInt(1), 384)
 	maxBig96 = new(big.Int).Sub(new(big.Int).Set(two96), big.NewInt(1))
 	maxWord  = new(big.Int).SetUint64(^uint64(0))
 )
@@ -26,6 +27,17 @@ func (uint192) Generate(r *rand.Rand, _ int) reflect.Value {
 		mid: r.Uint64(),
 		lo:  r.Uint64(),
 	})
+}
+
+func (uint384) Generate(r *rand.Rand, _ int) reflect.Value {
+	return reflect.ValueOf(uint384{w: [6]uint64{
+		r.Uint64(),
+		r.Uint64(),
+		r.Uint64(),
+		r.Uint64(),
+		r.Uint64(),
+		r.Uint64(),
+	}})
 }
 
 func TestMaxMantissaDecimalMatchesMaxMantissa(t *testing.T) {
@@ -291,6 +303,67 @@ func TestUint192ScratchArithmeticWithBigIntOracle(t *testing.T) {
 	}
 }
 
+func TestUint384ScratchArithmeticWithBigIntOracle(t *testing.T) {
+	values := []uint384{
+		{},
+		{w: [6]uint64{1}},
+		{w: [6]uint64{^uint64(0)}},
+		{w: [6]uint64{0, 1}},
+		{w: [6]uint64{0, 0, 0, 0, 0, 1}},
+		{w: [6]uint64{^uint64(0), ^uint64(0), ^uint64(0), ^uint64(0), ^uint64(0), ^uint64(0)}},
+	}
+	rng := rand.New(rand.NewSource(8)) //nolint:gosec // Deterministic test data, not cryptographic randomness.
+	for range 256 {
+		values = append(values, uint384{w: [6]uint64{
+			rng.Uint64(),
+			rng.Uint64(),
+			rng.Uint64(),
+			rng.Uint64(),
+			rng.Uint64(),
+			rng.Uint64(),
+		}})
+	}
+
+	scales := []int{0, 1, 9, 28, 56}
+	for i, value := range values {
+		for _, scale := range scales {
+			got, ok := value.scaleUp10(scale)
+			want := new(big.Int).Mul(bigUint384(value), bigPow10(scale))
+			wantOK := want.Cmp(two384) < 0
+			if ok != wantOK {
+				t.Fatalf("values[%d].scaleUp10(%d) ok = %v, want %v", i, scale, ok, wantOK)
+			}
+			if ok && bigUint384(got).Cmp(want) != 0 {
+				t.Fatalf("values[%d].scaleUp10(%d) = %s, want %s", i, scale, bigUint384(got), want)
+			}
+		}
+
+		m := NewMantissa(rng.Uint32(), rng.Uint64())
+		gotMul, overflow := value.mulMantissa(m)
+		wantMul := new(big.Int).Mul(bigUint384(value), bigMantissa(m))
+		wantOverflow := wantMul.Cmp(two384) >= 0
+		if overflow != wantOverflow {
+			t.Fatalf("values[%d].mulMantissa(%s) overflow = %v, want %v", i, bigMantissa(m), overflow, wantOverflow)
+		}
+		if !overflow && bigUint384(gotMul).Cmp(wantMul) != 0 {
+			t.Fatalf("values[%d].mulMantissa(%s) = %s, want %s", i, bigMantissa(m), bigUint384(gotMul), wantMul)
+		}
+	}
+
+	for i, numerator := range values {
+		divisor := values[(i*17+5)%len(values)]
+		if divisor.isZero() {
+			divisor = uint384{w: [6]uint64{1}}
+		}
+		gotQ, gotR := numerator.divMod(divisor)
+		wantQ, wantR := new(big.Int).QuoRem(bigUint384(numerator), bigUint384(divisor), new(big.Int))
+		if bigUint384(gotQ).Cmp(wantQ) != 0 || bigUint384(gotR).Cmp(wantR) != 0 {
+			t.Fatalf("values[%d].divMod(divisor) = q %s r %s, want q %s r %s",
+				i, bigUint384(gotQ), bigUint384(gotR), wantQ, wantR)
+		}
+	}
+}
+
 func TestScaleUpMatchesBigInt(t *testing.T) {
 	values := []Mantissa{
 		{},
@@ -316,39 +389,6 @@ func TestScaleUpMatchesBigInt(t *testing.T) {
 			if ok && bigUint192(got).Cmp(want) != 0 {
 				t.Fatalf("values[%d] scale %d = %s, want %s",
 					i, scale, bigUint192(got), want)
-			}
-		}
-	}
-}
-
-func TestDivPow10WithRoundingDigitMatchesBigInt(t *testing.T) {
-	values := []uint192{
-		{},
-		{lo: 1},
-		{lo: 9},
-		{lo: 10},
-		{lo: ^uint64(0)},
-		{mid: maxMantissaHiWord, lo: ^uint64(0)},
-		{hi: 1},
-		{hi: ^uint64(0), mid: ^uint64(0), lo: ^uint64(0)},
-		fullMul96(MaxMantissa(), MaxMantissa()),
-	}
-	rng := rand.New(rand.NewSource(3)) //nolint:gosec // Deterministic test data, not cryptographic randomness.
-	for range 512 {
-		values = append(values, uint192{
-			hi:  rng.Uint64(),
-			mid: rng.Uint64(),
-			lo:  rng.Uint64(),
-		})
-	}
-
-	for i, n := range values {
-		for drop := 0; drop <= int(MaxScale); drop++ {
-			gotQ, gotDigit := divPow10WithRoundingDigit(n, drop)
-			wantQ, wantDigit := divPow10Oracle(n, drop)
-			if bigUint192(gotQ).Cmp(wantQ) != 0 || gotDigit != wantDigit {
-				t.Fatalf("values[%d] drop %d = q %s digit %d, want q %s digit %d",
-					i, drop, bigUint192(gotQ), gotDigit, wantQ, wantDigit)
 			}
 		}
 	}
@@ -388,24 +428,6 @@ func TestDivMod192By96MatchesBigIntQuick(t *testing.T) {
 		gotQ, gotR := divMod192By96(a, b)
 		wantQ, wantR := new(big.Int).QuoRem(bigUint192(a), bigMantissa(b), new(big.Int))
 		return bigUint192(gotQ).Cmp(wantQ) == 0 && bigMantissa(gotR).Cmp(wantR) == 0
-	}, cfg); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestQuotientFitsMantissaMatchesBigIntQuick(t *testing.T) {
-	cfg := &quick.Config{MaxCount: 2048}
-	if err := quick.Check(func(a uint192, b Mantissa) bool {
-		b = nonZeroMantissa(b)
-		quotient := new(big.Int).Quo(bigUint192(a), bigMantissa(b))
-		want := quotient.Cmp(two96) < 0
-		if quotientFitsMantissa(a, b) != want {
-			return false
-		}
-
-		smallDivisor := b.lo | 1
-		quotient.Quo(bigUint192(a), new(big.Int).SetUint64(smallDivisor))
-		return quotientFitsSmallMantissa(a, smallDivisor) == (quotient.Cmp(two96) < 0)
 	}, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -502,15 +524,13 @@ func bigUint192(n uint192) *big.Int {
 	return hi.Add(hi, new(big.Int).SetUint64(n.lo))
 }
 
-func divPow10Oracle(n uint192, drop int) (*big.Int, uint64) {
-	value := bigUint192(n)
-	quotient := new(big.Int).Quo(new(big.Int).Set(value), bigPow10(drop))
-	if drop == 0 {
-		return quotient, 0
+func bigUint384(n uint384) *big.Int {
+	out := new(big.Int)
+	for i := len(n.w) - 1; i >= 0; i-- {
+		out.Lsh(out, 64)
+		out.Add(out, new(big.Int).SetUint64(n.w[i]))
 	}
-	shifted := new(big.Int).Quo(value, bigPow10(drop-1))
-	digit := new(big.Int).Mod(shifted, big.NewInt(10)).Uint64()
-	return quotient, digit
+	return out
 }
 
 func bigPow10(exp int) *big.Int {
