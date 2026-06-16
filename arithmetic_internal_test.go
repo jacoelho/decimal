@@ -134,6 +134,35 @@ func TestFullMul96MatchesBigInt(t *testing.T) {
 	}
 }
 
+func TestFullMul96By64MatchesBigInt(t *testing.T) {
+	values := []Mantissa{
+		{},
+		oneMantissa,
+		MantissaFromUint64(2),
+		MantissaFromUint64(^uint64(0)),
+		NewMantissa(1, 0),
+		MaxMantissa(),
+	}
+	multipliers := []uint64{0, 1, 10, ^uint64(0)}
+
+	rng := rand.New(rand.NewSource(7)) //nolint:gosec // Deterministic test data, not cryptographic randomness.
+	for range 512 {
+		values = append(values, NewMantissa(rng.Uint32(), rng.Uint64()))
+		multipliers = append(multipliers, rng.Uint64())
+	}
+
+	for i, value := range values {
+		for j, multiplier := range multipliers {
+			got := fullMul96By64(value, multiplier)
+			want := new(big.Int).Mul(bigMantissa(value), new(big.Int).SetUint64(multiplier))
+			if bigUint192(got).Cmp(want) != 0 {
+				t.Fatalf("values[%d] * multipliers[%d] = %s, want %s",
+					i, j, bigUint192(got), want)
+			}
+		}
+	}
+}
+
 func TestMantissaDivMod64MatchesBigInt(t *testing.T) {
 	if err := quick.Check(func(a Mantissa, divisor uint64) bool {
 		divisor |= 1
@@ -257,7 +286,38 @@ func TestUint192ScratchArithmeticWithBigIntOracle(t *testing.T) {
 			assertUint192DivMod(t, i, j, a, divisor)
 		}
 		assertUint192Mul96(t, i, a, divisors[(i*37+11)%len(divisors)])
+		assertUint192Mul64(t, i, a, rng.Uint64())
 		assertUint192DivModSmall(t, i, a, rng.Uint64()|1)
+	}
+}
+
+func TestScaleUpMatchesBigInt(t *testing.T) {
+	values := []Mantissa{
+		{},
+		oneMantissa,
+		MantissaFromUint64(10),
+		MantissaFromUint64(^uint64(0)),
+		NewMantissa(1, 0),
+		MaxMantissa(),
+	}
+	rng := rand.New(rand.NewSource(8)) //nolint:gosec // Deterministic test data, not cryptographic randomness.
+	for range 512 {
+		values = append(values, NewMantissa(rng.Uint32(), rng.Uint64()))
+	}
+
+	for i, value := range values {
+		for scale := range 57 {
+			got, ok := scaleUp(value, scale)
+			want := new(big.Int).Mul(bigMantissa(value), bigPow10(scale))
+			wantOK := want.Cmp(two192) < 0
+			if ok != wantOK {
+				t.Fatalf("values[%d] scale %d ok = %v, want %v", i, scale, ok, wantOK)
+			}
+			if ok && bigUint192(got).Cmp(want) != 0 {
+				t.Fatalf("values[%d] scale %d = %s, want %s",
+					i, scale, bigUint192(got), want)
+			}
+		}
 	}
 }
 
@@ -333,6 +393,24 @@ func TestDivMod192By96MatchesBigIntQuick(t *testing.T) {
 	}
 }
 
+func TestQuotientFitsMantissaMatchesBigIntQuick(t *testing.T) {
+	cfg := &quick.Config{MaxCount: 2048}
+	if err := quick.Check(func(a uint192, b Mantissa) bool {
+		b = nonZeroMantissa(b)
+		quotient := new(big.Int).Quo(bigUint192(a), bigMantissa(b))
+		want := quotient.Cmp(two96) < 0
+		if quotientFitsMantissa(a, b) != want {
+			return false
+		}
+
+		smallDivisor := b.lo | 1
+		quotient.Quo(bigUint192(a), new(big.Int).SetUint64(smallDivisor))
+		return quotientFitsSmallMantissa(a, smallDivisor) == (quotient.Cmp(two96) < 0)
+	}, cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func assertUint192Add(t *testing.T, i, j int, a, b uint192) {
 	t.Helper()
 	got, ok := a.add(b)
@@ -373,6 +451,19 @@ func assertUint192Mul96(t *testing.T, i int, a uint192, b Mantissa) {
 	}
 	if ok && bigUint192(got).Cmp(want) != 0 {
 		t.Fatalf("values[%d].mul96(%s) = %s, want %s", i, bigMantissa(b), bigUint192(got), want)
+	}
+}
+
+func assertUint192Mul64(t *testing.T, i int, a uint192, b uint64) {
+	t.Helper()
+	got, ok := a.mul64(b)
+	want := new(big.Int).Mul(bigUint192(a), new(big.Int).SetUint64(b))
+	wantOK := want.Cmp(two192) < 0
+	if ok != wantOK {
+		t.Fatalf("values[%d].mul64(%d) ok = %v, want %v", i, b, ok, wantOK)
+	}
+	if ok && bigUint192(got).Cmp(want) != 0 {
+		t.Fatalf("values[%d].mul64(%d) = %s, want %s", i, b, bigUint192(got), want)
 	}
 }
 
