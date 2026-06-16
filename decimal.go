@@ -7,15 +7,16 @@ import (
 
 // Decimal is a signed fixed-size decimal.
 //
-// The representation follows .NET decimal: a 96-bit unsigned mantissa plus a
-// 32-bit flags word carrying sign and scale. The value is mantissa * 10^-scale,
-// negated when the sign bit is set. Scale is the number of fractional decimal
-// digits and is always in [0, 28]. The zero value is the canonical zero.
-// Decimal values are comparable, but == compares the stored representation; use
-// Cmp or Equal for numeric equality.
+// The representation is a 96-bit unsigned mantissa plus a 32-bit flags word
+// carrying sign and scale. The value is mantissa * 10^-scale, negated when the
+// sign bit is set. Scale is the number of fractional decimal digits and is
+// always in [0, 28]. The zero value is the canonical zero. Decimal is
+// intentionally not comparable; use Cmp or Equal for numeric equality.
 //
 //nolint:recvcheck // Decode and SQL scan APIs must mutate through *Decimal; value receivers keep Decimal immutable elsewhere.
 type Decimal struct {
+	_ [0]func() // prevent ==; use Equal, Cmp, or Bits.
+
 	lo    uint64
 	hi    uint32
 	flags uint32

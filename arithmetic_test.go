@@ -223,7 +223,7 @@ func TestRemainderReturnsDividendWhenScaledDivisorOverflowsMantissa(t *testing.T
 	if !ok {
 		t.Fatalf("Remainder failed")
 	}
-	if got != dividend {
+	if !sameBits(got, dividend) {
 		t.Fatalf("%s %% Max = %s, want original representation", dividend, got)
 	}
 }
@@ -244,7 +244,7 @@ func TestRoundToRoundsHalfAwayFromZero(t *testing.T) {
 	if got := d.RoundTo(2).String(); got != "12.35" {
 		t.Fatalf("RoundTo(2) = %s, want 12.35", got)
 	}
-	if got := d.RoundTo(decimal.MaxScale + 1); got != d {
+	if got := d.RoundTo(decimal.MaxScale + 1); !sameBits(got, d) {
 		t.Fatalf("RoundTo(MaxScale+1) = %s, want original representation", got)
 	}
 }

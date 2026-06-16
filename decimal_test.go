@@ -4,10 +4,23 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"reflect"
 	"testing"
 
 	"github.com/jacoelho/decimal"
 )
+
+func sameBits(a, b decimal.Decimal) bool {
+	aLo, aMid, aHi, aFlags := a.Bits()
+	bLo, bMid, bHi, bFlags := b.Bits()
+	return aLo == bLo && aMid == bMid && aHi == bHi && aFlags == bFlags
+}
+
+func TestDecimalIsNotComparable(t *testing.T) {
+	if reflect.TypeFor[decimal.Decimal]().Comparable() {
+		t.Fatalf("Decimal should not be comparable; use Equal, Cmp, or Bits")
+	}
+}
 
 func TestDecimalLimitsMatchDotNetDecimal(t *testing.T) {
 	if decimal.MaxScale != 28 {
@@ -115,7 +128,7 @@ func TestDotNetBitsUseLowMiddleHighWordOrder(t *testing.T) {
 		t.Fatalf("Bits() = (%#x, %#x, %#x, %#x), want (%#x, %#x, %#x, %#x)",
 			gotLoWord, gotMidWord, gotHiWord, gotFlags, lo, mid, hi, flags)
 	}
-	if d != constructed {
+	if !sameBits(d, constructed) {
 		t.Fatalf("FromBits and MustNew constructed different representations")
 	}
 }
@@ -177,7 +190,7 @@ func TestSignNegAndAbs(t *testing.T) {
 	}
 
 	var zero decimal.Decimal
-	if zero.Neg() != zero || zero.Abs() != zero || zero.Sign() != 0 || zero.IsNegative() || zero.IsPositive() {
+	if !sameBits(zero.Neg(), zero) || !sameBits(zero.Abs(), zero) || zero.Sign() != 0 || zero.IsNegative() || zero.IsPositive() {
 		t.Fatalf("zero unary result: Neg=%s Abs=%s Sign=%d IsNegative=%v IsPositive=%v",
 			zero.Neg(), zero.Abs(), zero.Sign(), zero.IsNegative(), zero.IsPositive())
 	}
@@ -189,7 +202,7 @@ func TestEqualIgnoresTrailingFractionalZeros(t *testing.T) {
 	if !a.Equal(b) || a.Cmp(b) != 0 {
 		t.Fatalf("%s and %s should compare equal", a, b)
 	}
-	if a == b {
+	if sameBits(a, b) {
 		t.Fatalf("%s and %s should not have identical representation", a, b)
 	}
 }
@@ -292,23 +305,23 @@ func TestIsInteger(t *testing.T) {
 func TestMinMaxClamp(t *testing.T) {
 	onePointTwoZero := mustParse(t, "1.20")
 	onePointTwo := mustParse(t, "1.2")
-	if got := onePointTwoZero.Min(onePointTwo); got != onePointTwoZero {
+	if got := onePointTwoZero.Min(onePointTwo); !sameBits(got, onePointTwoZero) {
 		t.Fatalf("Min equal values = %s, want receiver representation", got)
 	}
-	if got := onePointTwoZero.Max(onePointTwo); got != onePointTwoZero {
+	if got := onePointTwoZero.Max(onePointTwo); !sameBits(got, onePointTwoZero) {
 		t.Fatalf("Max equal values = %s, want receiver representation", got)
 	}
 
 	one := decimal.FromUint64(1)
 	two := decimal.FromUint64(2)
 	three := decimal.FromUint64(3)
-	if got, ok := two.Clamp(one, three); !ok || got != two {
+	if got, ok := two.Clamp(one, three); !ok || !sameBits(got, two) {
 		t.Fatalf("2.Clamp(1, 3) = %s ok %v, want 2 true", got, ok)
 	}
-	if got, ok := (decimal.Decimal{}).Clamp(one, three); !ok || got != one {
+	if got, ok := (decimal.Decimal{}).Clamp(one, three); !ok || !sameBits(got, one) {
 		t.Fatalf("0.Clamp(1, 3) = %s ok %v, want 1 true", got, ok)
 	}
-	if got, ok := decimal.FromUint64(5).Clamp(one, three); !ok || got != three {
+	if got, ok := decimal.FromUint64(5).Clamp(one, three); !ok || !sameBits(got, three) {
 		t.Fatalf("5.Clamp(1, 3) = %s ok %v, want 3 true", got, ok)
 	}
 	if _, ok := two.Clamp(three, one); ok {
