@@ -2,6 +2,15 @@
 
 Pure Go fixed-size decimal package.
 
+`Decimal` is a 128-bit value type backed by a 96-bit unsigned mantissa and a
+32-bit flags word. Core parsing and arithmetic use fixed-size integer
+arithmetic, not `math/big`.
+
+Successful parsing and arithmetic do not allocate heap objects. Benchmarks for
+those paths should report `0 B/op` and `0 allocs/op`. APIs that return Go
+strings allocate for the returned string; append-style APIs allocate only if the
+caller-provided buffer lacks capacity.
+
 ## Quickstart
 
 ```go
@@ -30,16 +39,18 @@ Output:
 
 ## Model and Scale
 
-`Decimal` is a signed 128-bit decimal value:
+The numeric value is:
 
 ```text
 value = (-1)^sign * mantissa * 10^-scale
 ```
 
-It stores a 96-bit mantissa and a 32-bit flags word containing sign and scale.
+Scale is the number of fractional decimal digits and is always in `[0, 28]`.
 The layout was chosen with .NET decimal as a reference, but this package defines
-its own Go API and behavior. `Bits` and `FromBits` use `lo, mid, hi, flags`
-word order.
+its own Go API and behavior.
+
+`Bits` and `FromBits` expose the representation in `lo, mid, hi, flags` word
+order:
 
 ```go
 d, err := decimal.Parse("10.00000")
@@ -66,10 +77,14 @@ required.
 Zero is always canonicalized and formats as `"0"`, even if parsed from `"-0"` or
 `"0.00000"`.
 
-General formatting preserves stored trailing zeroes. `StringFixed` and
-`AppendFixed` format with an exact requested scale without rounding. `Decimal`
-also implements `fmt.Formatter`, so `fmt.Sprintf("%.2f", d)` emits exactly two
-fractional digits when the value can be represented at that scale.
+Parsing accepts an optional sign, decimal digits with an optional decimal point,
+and an optional base-10 exponent. Either side of the decimal point may be empty
+when the other side has digits, so `".01"`, `"-.01"`, and `"1."` are valid.
+
+Formatting preserves stored trailing zeroes for non-zero values. `StringFixed`
+and `AppendFixed` format with an exact requested scale without rounding.
+`Decimal` also implements `fmt.Formatter`, so `fmt.Sprintf("%.2f", d)` emits
+exactly two fractional digits when the value can be represented at that scale.
 
 ## Exact Arithmetic
 
