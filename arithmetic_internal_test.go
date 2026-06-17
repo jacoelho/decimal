@@ -115,6 +115,21 @@ func TestMantissaCheckedArithmeticMatchesBigInt(t *testing.T) {
 	}
 }
 
+func TestMantissaMul10AddMatchesBigInt(t *testing.T) {
+	if err := quick.Check(func(m Mantissa, digit byte) bool {
+		digit %= 10
+		got, overflow := m.mul10Add(digit)
+		want := new(big.Int).Mul(bigMantissa(m), big.NewInt(10))
+		want.Add(want, new(big.Int).SetUint64(uint64(digit)))
+		if overflow != (want.Cmp(two96) >= 0) {
+			return false
+		}
+		return overflow || got == mantissaFromBigWrapped(want)
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFullMul96MatchesBigInt(t *testing.T) {
 	values := []Mantissa{
 		{},

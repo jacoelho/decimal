@@ -61,6 +61,16 @@ func (m Mantissa) mulChecked(other Mantissa) (Mantissa, bool) {
 	return got, !ok
 }
 
+func (m Mantissa) mul10Add(digit byte) (Mantissa, bool) {
+	carry, lo := bits.Mul64(m.lo, 10)
+	lo, addCarry := bits.Add64(lo, uint64(digit), 0)
+	hi := uint64(m.hi)*10 + carry + addCarry
+	if hi > maxMantissaHiWord {
+		return Mantissa{}, true
+	}
+	return Mantissa{hi: uint32FromChecked(hi), lo: lo}, false
+}
+
 func (m Mantissa) divMod64(divisor uint64) (Mantissa, uint64) {
 	if m.hi == 0 {
 		return Mantissa{lo: m.lo / divisor}, m.lo % divisor

@@ -2,6 +2,7 @@ package decimal_test
 
 import (
 	"errors"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -20,6 +21,9 @@ func TestParseValidInputs(t *testing.T) {
 		{"-123", "-123"},
 		{"123.4500", "123.4500"},
 		{"0.00123", "0.00123"},
+		{".01", "0.01"},
+		{"+.01", "0.01"},
+		{"-.01", "-0.01"},
 		{"-.125", "-0.125"},
 		{"1.", "1"},
 		{"1e3", "1000"},
@@ -86,24 +90,53 @@ func FuzzParseRoundTrip(f *testing.F) {
 		"0",
 		"-0",
 		"123.4500",
+		".01",
+		"+.01",
+		"-.01",
 		"1e28",
 		"1e-28",
 		"79228162514264337593543950335",
+		"79228162514264337593543950335.0",
+		"0e-9223372036854775808",
+		"1.2.3",
+		"1e",
 	} {
 		f.Add(seed)
 	}
 
 	f.Fuzz(func(t *testing.T, s string) {
-		d, err := decimal.Parse(s)
-		if err != nil {
+		if len(s) > 512 {
 			return
 		}
+
+		d, err := decimal.Parse(s)
+		if err != nil {
+			if !errors.Is(err, decimal.ErrParse) {
+				t.Fatalf("Parse(%q) error = %v, want ErrParse wrapper", s, err)
+			}
+			if strings.Contains(err.Error(), "\n") {
+				t.Fatalf("Parse(%q) error contains newline: %q", s, err)
+			}
+			return
+		}
+
 		roundTrip, err := decimal.Parse(d.String())
 		if err != nil {
 			t.Fatalf("Parse(String()) failed for %q -> %q: %v", s, d.String(), err)
 		}
 		if !roundTrip.Equal(d) {
 			t.Fatalf("Parse(String()) = %s, want %s from input %q", roundTrip, d, s)
+		}
+
+		want, ok := new(big.Rat).SetString(s)
+		if !ok {
+			if !d.IsZero() {
+				t.Fatalf("Parse(%q) accepted non-zero %s but big.Rat rejected input", s, d)
+			}
+			return
+		}
+		if got := decimalRat(d); got.Cmp(want) != 0 {
+			t.Fatalf("Parse(%q) = %s (%s), want %s", s, d, got, want)
 		}
 	})
 }
