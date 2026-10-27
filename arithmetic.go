@@ -67,6 +67,64 @@ func (d Decimal) Mul(other Decimal) (Decimal, error) {
 	return exactPack(aNeg != bNeg, int(aScale)+int(bScale), uint384FromUint192(fullMul96(aMant, bMant)), "mul")
 }
 
+// ScalePow10 returns d * 10^n exactly. Positive exponents move the decimal
+// point right; negative exponents move it left. Any int exponent is accepted.
+//
+// The result preserves the shifted scale within [0, MaxScale], removing only
+// the trailing zeroes needed to fit. An exponent of zero preserves d's
+// representation, and a zero input always returns canonical zero.
+//
+// ScalePow10 returns zero and a wrapped ErrOverflow if the magnitude is too
+// large, or ErrInexact if non-zero digits would be lost. It never rounds.
+func (d Decimal) ScalePow10(n int) (Decimal, error) {
+	return d.scalePow10(n, "scale pow10")
+}
+
+func (d Decimal) scalePow10(n int, op string) (Decimal, error) {
+	negative, scale, mantissa := d.unpack()
+	if mantissa.isZero() {
+		return Decimal{}, nil
+	}
+	if n == 0 {
+		return d, nil
+	}
+
+	// Non-zero values range from 10^-28 to less than 10^29. Check n before
+	// subtracting it so even the extreme int exponents cannot wrap around.
+	const maxShift = 2 * int(MaxScale)
+	if n > maxShift {
+		return Decimal{}, fmt.Errorf("decimal: %s: exponent %d: %w", op, n, ErrOverflow)
+	}
+	if n < -maxShift {
+		return Decimal{}, fmt.Errorf("decimal: %s: exponent %d: %w", op, n, ErrInexact)
+	}
+
+	targetScale := int(scale) - n
+	if targetScale < 0 {
+		if -targetScale > int(MaxScale) {
+			return Decimal{}, fmt.Errorf("decimal: %s: exponent %d: %w", op, n, ErrOverflow)
+		}
+		scaled, ok := mulPow10Mantissa(mantissa, uint8FromScale(-targetScale))
+		if !ok {
+			return Decimal{}, fmt.Errorf("decimal: %s: exponent %d: %w", op, n, ErrOverflow)
+		}
+		return pack(negative, 0, scaled), nil
+	}
+	if targetScale > int(MaxScale) {
+		drop := targetScale - int(MaxScale)
+		// A non-zero 96-bit mantissa cannot contain 29 trailing zeroes.
+		if drop > int(MaxScale) {
+			return Decimal{}, fmt.Errorf("decimal: %s: exponent %d: %w", op, n, ErrInexact)
+		}
+		quotient, remainder := divModPow10Mantissa(mantissa, uint8FromScale(drop))
+		if !remainder.isZero() {
+			return Decimal{}, fmt.Errorf("decimal: %s: exponent %d: %w", op, n, ErrInexact)
+		}
+		return pack(negative, MaxScale, quotient), nil
+	}
+	return pack(negative, uint8FromScale(targetScale), mantissa), nil
+}
+
 // Div returns d / other exactly.
 func (d Decimal) Div(other Decimal) (Decimal, error) {
 	aNeg, aScale, aMant := d.unpack()
@@ -79,19 +137,8 @@ func (d Decimal) Div(other Decimal) (Decimal, error) {
 	}
 
 	neg := aNeg != bNeg
-	if bMant == oneMantissa && bScale == 0 {
-		return pack(neg, aScale, aMant).Normalize(), nil
-	}
 	if exponent, ok := powerOfTenDivisorExponent(bMant, bScale); ok {
-		targetScale := int(aScale) + exponent
-		if targetScale < 0 {
-			mantissa, ok := mulPow10Mantissa(aMant, uint8FromScale(-targetScale))
-			if !ok {
-				return Decimal{}, fmt.Errorf("decimal: div: %w", ErrOverflow)
-			}
-			return pack(neg, 0, mantissa), nil
-		}
-		res, err := exactPack(neg, targetScale, uint384FromMantissa(aMant), "div")
+		res, err := pack(neg, aScale, aMant).scalePow10(-exponent, "div")
 		if err != nil {
 			return Decimal{}, err
 		}
