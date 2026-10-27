@@ -11,7 +11,7 @@ import (
 	"github.com/jacoelho/decimal"
 )
 
-func TestScalePow10(t *testing.T) {
+func TestScaleByPowerOfTen(t *testing.T) {
 	const maxInt = int(^uint(0) >> 1)
 	const minInt = -maxInt - 1
 	smallest := decimal.MustNew(decimal.MantissaFromUint64(1), 28, false)
@@ -53,22 +53,22 @@ func TestScalePow10(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.input.ScalePow10(tt.n)
+			got, err := tt.input.ScaleByPowerOfTen(tt.n)
 			if !errors.Is(err, tt.wantErr) || decimalBits(got) != decimalBits(tt.want) {
-				t.Fatalf("%s.ScalePow10(%d) = %s bits=%x err=%v, want %s bits=%x err=%v",
+				t.Fatalf("%s.ScaleByPowerOfTen(%d) = %s bits=%x err=%v, want %s bits=%x err=%v",
 					tt.input, tt.n, got, decimalBits(got), err, tt.want, decimalBits(tt.want), tt.wantErr)
 			}
-			if tt.wantErr != nil && !strings.Contains(err.Error(), fmt.Sprintf("decimal: scale pow10: exponent %d:", tt.n)) {
+			if tt.wantErr != nil && !strings.Contains(err.Error(), fmt.Sprintf("decimal: scale by power of ten: exponent %d:", tt.n)) {
 				t.Fatalf("error %q lacks operation and exponent context", err)
 			}
 		})
 	}
 }
 
-func TestScalePow10MatchesBigRat(t *testing.T) {
+func TestScaleByPowerOfTenMatchesBigRat(t *testing.T) {
 	rng := rand.New(rand.NewSource(3000)) //nolint:gosec // Deterministic property data.
 	for i := range 2048 {
-		d := randomScalePow10Decimal(t, rng, i%4)
+		d := randomScaleByPowerOfTenDecimal(t, rng, i%4)
 		s := int(d.Scale())
 		n := rng.Intn(115) - 57
 		if rng.Intn(2) == 0 {
@@ -83,7 +83,7 @@ func TestScalePow10MatchesBigRat(t *testing.T) {
 			want.Quo(want, new(big.Rat).SetInt(pow10Big(-n)))
 		}
 		_, wantErr := exactDecimalOracle(want)
-		got, err := d.ScalePow10(n)
+		got, err := d.ScaleByPowerOfTen(n)
 		if !errors.Is(err, wantErr) ||
 			wantErr == nil && decimalRat(got).Cmp(want) != 0 ||
 			wantErr != nil && decimalBits(got) != [4]uint32{} {
@@ -93,7 +93,7 @@ func TestScalePow10MatchesBigRat(t *testing.T) {
 	}
 }
 
-func randomScalePow10Decimal(t *testing.T, rng *rand.Rand, family int) decimal.Decimal {
+func randomScaleByPowerOfTenDecimal(t *testing.T, rng *rand.Rand, family int) decimal.Decimal {
 	t.Helper()
 	var m *big.Int
 	switch family {
@@ -203,7 +203,7 @@ func TestDivPowerOfTenErrorContext(t *testing.T) {
 	}
 }
 
-func TestScalePow10DoesNotAllocate(t *testing.T) {
+func TestScaleByPowerOfTenDoesNotAllocate(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		input decimal.Decimal
@@ -219,13 +219,13 @@ func TestScalePow10DoesNotAllocate(t *testing.T) {
 			var got decimal.Decimal
 			var err error
 			allocs := testing.AllocsPerRun(100, func() {
-				got, err = tt.input.ScalePow10(tt.n)
+				got, err = tt.input.ScaleByPowerOfTen(tt.n)
 			})
 			if allocs != 0 {
-				t.Errorf("ScalePow10 allocated %g objects per call, want 0", allocs)
+				t.Errorf("ScaleByPowerOfTen allocated %g objects per call, want 0", allocs)
 			}
 			if err != nil || decimalBits(got) != decimalBits(tt.want) {
-				t.Fatalf("ScalePow10 = %s bits=%x err=%v, want %s bits=%x", got, decimalBits(got), err, tt.want, decimalBits(tt.want))
+				t.Fatalf("ScaleByPowerOfTen = %s bits=%x err=%v, want %s bits=%x", got, decimalBits(got), err, tt.want, decimalBits(tt.want))
 			}
 		})
 	}

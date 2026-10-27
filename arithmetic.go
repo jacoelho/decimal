@@ -67,20 +67,20 @@ func (d Decimal) Mul(other Decimal) (Decimal, error) {
 	return exactPack(aNeg != bNeg, int(aScale)+int(bScale), uint384FromUint192(fullMul96(aMant, bMant)), "mul")
 }
 
-// ScalePow10 returns d * 10^n exactly. Positive exponents move the decimal
+// ScaleByPowerOfTen returns d * 10^n exactly. Positive exponents move the decimal
 // point right; negative exponents move it left. Any int exponent is accepted.
 //
 // The result preserves the shifted scale within [0, MaxScale], removing only
 // the trailing zeroes needed to fit. An exponent of zero preserves d's
 // representation, and a zero input always returns canonical zero.
 //
-// ScalePow10 returns zero and a wrapped ErrOverflow if the magnitude is too
+// ScaleByPowerOfTen returns zero and a wrapped ErrOverflow if the magnitude is too
 // large, or ErrInexact if non-zero digits would be lost. It never rounds.
-func (d Decimal) ScalePow10(n int) (Decimal, error) {
-	return d.scalePow10(n, "scale pow10")
+func (d Decimal) ScaleByPowerOfTen(n int) (Decimal, error) {
+	return d.scaleByPowerOfTen(n, "scale by power of ten")
 }
 
-func (d Decimal) scalePow10(n int, op string) (Decimal, error) {
+func (d Decimal) scaleByPowerOfTen(n int, op string) (Decimal, error) {
 	negative, scale, mantissa := d.unpack()
 	if mantissa.isZero() {
 		return Decimal{}, nil
@@ -138,7 +138,7 @@ func (d Decimal) Div(other Decimal) (Decimal, error) {
 
 	neg := aNeg != bNeg
 	if exponent, ok := powerOfTenDivisorExponent(bMant, bScale); ok {
-		res, err := pack(neg, aScale, aMant).scalePow10(-exponent, "div")
+		res, err := pack(neg, aScale, aMant).scaleByPowerOfTen(-exponent, "div")
 		if err != nil {
 			return Decimal{}, err
 		}
