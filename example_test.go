@@ -31,6 +31,24 @@ func ExampleDecimal_Rescale() {
 	// 10.00000
 }
 
+func ExampleDecimal_ScaleByPowerOfTen() {
+	d, err := decimal.Parse("1.2300")
+	if err != nil {
+		panic(err)
+	}
+	for _, n := range []int{2, -2} {
+		shifted, err := d.ScaleByPowerOfTen(n)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(shifted.String())
+	}
+
+	// Output:
+	// 123.00
+	// 0.012300
+}
+
 func ExampleDecimal_Quantize() {
 	d, err := decimal.Parse("10.005")
 	if err != nil {

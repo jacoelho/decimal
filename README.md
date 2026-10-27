@@ -88,8 +88,8 @@ exactly two fractional digits when the value can be represented at that scale.
 
 ## Exact Arithmetic
 
-`Add`, `Sub`, `Mul`, `Div`, `Remainder`, and `Rescale` return `(Decimal,
-error)`. Arithmetic is exact by default. If the exact result cannot be
+`Add`, `Sub`, `Mul`, `Div`, `Remainder`, `ScaleByPowerOfTen`, and `Rescale` return
+`(Decimal, error)`. Arithmetic is exact by default. If the exact result cannot be
 represented, the operation returns a wrapped sentinel error:
 
 - `ErrInexact`: non-zero precision would be lost.
@@ -98,6 +98,19 @@ represented, the operation returns a wrapped sentinel error:
 - `ErrInvalid`: invalid scale, mode, quantum, or clamp bounds.
 
 Use `errors.Is` to inspect errors.
+
+`ScaleByPowerOfTen(n)` multiplies the value by `10^n` exactly. Positive exponents
+move the decimal point right; negative exponents move it left. For example,
+`1.2300` becomes `123.00` with exponent `2`, or `0.012300` with exponent `-2`.
+Unlike `Rescale`, this changes the numeric value. The stored scale need not
+match the result of `Mul` by an equivalent power of ten.
+
+Any `int` exponent is accepted, including powers that cannot themselves fit
+in a `Decimal`: `1e-28` scaled by `10^56` produces `1e28`. The result preserves
+the shifted scale within `[0, 28]`, removing only the trailing zeroes needed
+to fit. Exponent zero preserves the representation; zero remains canonical
+for every exponent. An unrepresentable result returns zero and `ErrOverflow`
+or `ErrInexact`, without rounding or silently underflowing to zero.
 
 ## Rounding
 
